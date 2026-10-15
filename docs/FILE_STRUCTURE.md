@@ -3,8 +3,15 @@
 
 ```
 tapup/
+├─ package.json                       [0] Next.js scripts and dependencies
+├─ package-lock.json                  [0] reproducible npm dependency versions
+├─ next.config.ts                     [0] Next.js configuration
+├─ tsconfig.json                      [0] TypeScript configuration and @/* alias
+├─ eslint.config.mjs                  [0] ESLint configuration
+├─ vitest.config.mts                  [0] Vitest config (pass with no tests before agent 3)
 ├─ app/
 │  ├─ layout.tsx                      [4] root layout, font, PWA meta, theme
+│  ├─ globals.css                     [0] Tailwind theme tokens and global styles
 │  ├─ page.tsx                        [4] redirects: shop owner -> /shop/sell, customer -> /me
 │  ├─ (auth)/login/page.tsx           [4] email + password login
 │  ├─ (auth)/signup/page.tsx          [4] sign up as shop owner or customer
@@ -35,9 +42,10 @@ tapup/
 │  ├─ supabase/client.ts              [4] browser client
 │  ├─ supabase/server.ts              [4] server client (cookies)
 │  └─ actions/
-│     ├─ sales.ts                     [4] createSale, approveTab, payCash, demoPay
+│     ├─ auth.ts                      [4] signUp, signIn, signOut
+│     ├─ sales.ts                     [4] createSale, requestTab, requestCash, approveTab, payCash, demoPay
 │     ├─ tabs.ts                      [4] repayTab
-│     └─ customers.ts                 [4] addCustomer, linkWithConsent
+│     └─ customers.ts                 [4] addCustomer, linkWithConsent, setCustomerPin, server-only verifyCustomerPin helper, setCustomerPin, server-only verifyCustomerPin helper
 ├─ middleware.ts                      [5] auth gate and security headers
 ├─ public/
 │  ├─ manifest.webmanifest            [6] PWA manifest
