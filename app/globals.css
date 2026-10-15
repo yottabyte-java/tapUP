@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --background: #111A1E;
+  --foreground: #F3F7F5;
+}
+
+@theme inline {
+  /* WHY: Keep Tailwind utilities aligned with the approved tapUP design tokens. */
+  --color-bg: #111A1E;
+  --color-card: #1B2A30;
+  --color-teal: #2DD4A0;
+  --color-amber: #F5B83D;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-dm-sans);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
