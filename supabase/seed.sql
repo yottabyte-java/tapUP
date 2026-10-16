@@ -89,39 +89,35 @@ BEGIN
 END;
 $seed_demo$;
 
--- WHY: Staging keeps the fixed demo history together so reruns use the same sale IDs and
--- repayment schedule while timestamps remain relative to the day the seed is run.
-CREATE TEMP TABLE tapup_demo_sales (
-  sale_id uuid PRIMARY KEY,
-  sale_no smallint NOT NULL UNIQUE,
-  shop_customer_id uuid NOT NULL,
-  days_ago integer NOT NULL,
-  method text NOT NULL CHECK (method IN ('tab', 'demo_card', 'cash')),
-  total_cents integer NOT NULL CHECK (total_cents > 0),
-  repayment_days_after_sale integer
-) ON COMMIT DROP;
+-- WHY: The fixed demo rows are kept inline so reruns use the same sale IDs without any
+-- session-scoped temp table that can disappear between statements or connections.
 
-INSERT INTO pg_temp.tapup_demo_sales (
-  sale_id,
-  sale_no,
+-- WHY: Each sale starts pending because the schema trigger requires normal state transitions;
+-- the single basket item is explicitly demo-labelled and reconciles exactly to integer cents.
+INSERT INTO public.sales (
+  id,
+  shop_id,
   shop_customer_id,
-  days_ago,
-  method,
+  items,
   total_cents,
-  repayment_days_after_sale
+  created_at
 )
 SELECT
-  md5('tapup-demo-sale-' || sale_no)::uuid,
-  sale_no,
-  CASE customer_key
+  md5('tapup-demo-sale-' || d.sale_no)::uuid,
+  'd3000000-0000-4000-8000-000000000001'::uuid,
+  CASE d.customer_key
     WHEN 'thabo' THEN 'd3000000-0000-4000-8000-000000000011'::uuid
     WHEN 'nomsa' THEN 'd3000000-0000-4000-8000-000000000012'::uuid
     WHEN 'sipho' THEN 'd3000000-0000-4000-8000-000000000013'::uuid
   END,
-  days_ago,
-  method,
-  total_cents,
-  repayment_days_after_sale
+  jsonb_build_array(jsonb_build_object(
+    'productId', 'demo-grocery-basket',
+    'name', 'Demo grocery basket',
+    'unitPriceCents', d.total_cents,
+    'qty', 1
+  )),
+  d.total_cents,
+  date_trunc('minute', now()) - d.days_ago * interval '1 day'
 FROM (
   VALUES
     ( 1, 29, 'thabo', 'demo_card', 3850, NULL::integer),
@@ -144,7 +140,7 @@ FROM (
     (18,  5, 'thabo', 'demo_card', 3990, NULL::integer),
     (19,  3, 'nomsa', 'demo_card', 4550, NULL::integer),
     (20,  0, 'thabo', 'cash',      2670, NULL::integer)
-) AS demo_rows (
+) AS d (
   sale_no,
   days_ago,
   customer_key,
@@ -152,30 +148,6 @@ FROM (
   total_cents,
   repayment_days_after_sale
 );
-
--- WHY: Each sale starts pending because the schema trigger requires normal state transitions;
--- the single basket item is explicitly demo-labelled and reconciles exactly to integer cents.
-INSERT INTO public.sales (
-  id,
-  shop_id,
-  shop_customer_id,
-  items,
-  total_cents,
-  created_at
-)
-SELECT
-  d.sale_id,
-  'd3000000-0000-4000-8000-000000000001'::uuid,
-  d.shop_customer_id,
-  jsonb_build_array(jsonb_build_object(
-    'productId', 'demo-grocery-basket',
-    'name', 'Demo grocery basket',
-    'unitPriceCents', d.total_cents,
-    'qty', 1
-  )),
-  d.total_cents,
-  date_trunc('minute', now()) - d.days_ago * interval '1 day'
-FROM pg_temp.tapup_demo_sales AS d;
 
 -- WHY: Completed cash and simulated-card sales pass through the same paid-state invariants as
 -- app-created sales; no actual payment or card data is represented.
@@ -186,8 +158,30 @@ UPDATE public.sales AS s
       paid_now_method = d.method,
       paid_now_confirmed_at = s.created_at + interval '1 minute',
       used_at = s.created_at + interval '1 minute'
-  FROM pg_temp.tapup_demo_sales AS d
-  WHERE s.id = d.sale_id
+  FROM (
+    VALUES
+      ( 1, 29, 'thabo', 'demo_card', 3850, NULL::integer),
+      ( 2, 27, 'thabo', 'cash',      2140, NULL::integer),
+      ( 5, 23, 'sipho', 'cash',      2480, NULL::integer),
+      ( 6, 22, 'thabo', 'demo_card', 2990, NULL::integer),
+      ( 7, 20, 'thabo', 'cash',      4850, NULL::integer),
+      ( 8, 19, 'nomsa', 'demo_card', 4760, NULL::integer),
+      (11, 15, 'thabo', 'cash',      2480, NULL::integer),
+      (12,  7, 'nomsa', 'cash',      3190, NULL::integer),
+      (14, 10, 'thabo', 'demo_card', 5390, NULL::integer),
+      (15,  8, 'thabo', 'cash',      2270, NULL::integer),
+      (18,  5, 'thabo', 'demo_card', 3990, NULL::integer),
+      (19,  3, 'nomsa', 'demo_card', 4550, NULL::integer),
+      (20,  0, 'thabo', 'cash',      2670, NULL::integer)
+  ) AS d (
+    sale_no,
+    days_ago,
+    customer_key,
+    method,
+    total_cents,
+    repayment_days_after_sale
+  )
+  WHERE s.id = md5('tapup-demo-sale-' || d.sale_no)::uuid
     AND d.method IN ('demo_card', 'cash');
 
 -- WHY: Tabs follow pending -> tab_requested -> approved so consent, PIN, limits, and tender
@@ -197,17 +191,47 @@ UPDATE public.sales AS s
       tab_cents = s.total_cents,
       status = 'tab_requested',
       used_at = s.created_at + interval '1 minute'
-  FROM pg_temp.tapup_demo_sales AS d
-  WHERE s.id = d.sale_id
-    AND d.method = 'tab';
+  FROM (
+    VALUES
+      ( 3, 26, 'nomsa', 'tab', 6800, 20),
+      ( 4, 25, 'thabo', 'tab', 5200,  8),
+      ( 9, 18, 'thabo', 'tab', 3950,  8),
+      (10, 17, 'sipho', 'tab', 7840, NULL::integer),
+      (13, 12, 'thabo', 'tab', 4600,  7),
+      (16, 14, 'nomsa', 'tab', 5600,  5),
+      (17,  6, 'thabo', 'tab', 3280,  3)
+  ) AS d (
+    sale_no,
+    days_ago,
+    customer_key,
+    method,
+    total_cents,
+    repayment_days_after_sale
+  )
+  WHERE s.id = md5('tapup-demo-sale-' || d.sale_no)::uuid;
 
 UPDATE public.sales AS s
   SET status = 'approved',
       approved_at = s.created_at + interval '2 minutes',
       due_at = s.created_at + interval '14 days'
-  FROM pg_temp.tapup_demo_sales AS d
-  WHERE s.id = d.sale_id
-    AND d.method = 'tab';
+  FROM (
+    VALUES
+      ( 3, 26, 'nomsa', 'tab', 6800, 20),
+      ( 4, 25, 'thabo', 'tab', 5200,  8),
+      ( 9, 18, 'thabo', 'tab', 3950,  8),
+      (10, 17, 'sipho', 'tab', 7840, NULL::integer),
+      (13, 12, 'thabo', 'tab', 4600,  7),
+      (16, 14, 'nomsa', 'tab', 5600,  5),
+      (17,  6, 'thabo', 'tab', 3280,  3)
+  ) AS d (
+    sale_no,
+    days_ago,
+    customer_key,
+    method,
+    total_cents,
+    repayment_days_after_sale
+  )
+  WHERE s.id = md5('tapup-demo-sale-' || d.sale_no)::uuid;
 
 -- WHY: The repayment trigger still validates each balance and completes each paid tab. The
 -- following timestamp update restores historical demo dates because the trigger uses now() for
@@ -215,7 +239,23 @@ UPDATE public.sales AS s
 INSERT INTO public.repayments (sale_id, amount_cents, on_time)
 SELECT s.id, s.tab_cents, true
   FROM public.sales AS s
-  JOIN pg_temp.tapup_demo_sales AS d ON d.sale_id = s.id
+  JOIN (
+    VALUES
+      ( 3, 26, 'nomsa', 'tab', 6800, 20),
+      ( 4, 25, 'thabo', 'tab', 5200,  8),
+      ( 9, 18, 'thabo', 'tab', 3950,  8),
+      (13, 12, 'thabo', 'tab', 4600,  7),
+      (16, 14, 'nomsa', 'tab', 5600,  5),
+      (17,  6, 'thabo', 'tab', 3280,  3)
+  ) AS d (
+    sale_no,
+    days_ago,
+    customer_key,
+    method,
+    total_cents,
+    repayment_days_after_sale
+  )
+  ON s.id = md5('tapup-demo-sale-' || d.sale_no)::uuid
   WHERE d.repayment_days_after_sale IS NOT NULL;
 
 UPDATE public.repayments AS r
@@ -224,7 +264,23 @@ UPDATE public.repayments AS r
       on_time = s.created_at
         + d.repayment_days_after_sale * interval '1 day' <= s.due_at
   FROM public.sales AS s
-  JOIN pg_temp.tapup_demo_sales AS d ON d.sale_id = s.id
+  JOIN (
+    VALUES
+      ( 3, 26, 'nomsa', 'tab', 6800, 20),
+      ( 4, 25, 'thabo', 'tab', 5200,  8),
+      ( 9, 18, 'thabo', 'tab', 3950,  8),
+      (13, 12, 'thabo', 'tab', 4600,  7),
+      (16, 14, 'nomsa', 'tab', 5600,  5),
+      (17,  6, 'thabo', 'tab', 3280,  3)
+  ) AS d (
+    sale_no,
+    days_ago,
+    customer_key,
+    method,
+    total_cents,
+    repayment_days_after_sale
+  )
+  ON s.id = md5('tapup-demo-sale-' || d.sale_no)::uuid
   WHERE r.sale_id = s.id;
 
 -- WHY: These assertions make a broken or incomplete demo seed fail loudly rather than leave
