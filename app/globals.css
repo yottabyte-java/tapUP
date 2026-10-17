@@ -3,21 +3,67 @@
 :root {
   color-scheme: dark;
   --background: #111A1E;
+  --card: #1B2A30;
+  --primary: #2DD4A0;
+  --accent: #F5B83D;
   --foreground: #F3F7F5;
 }
 
 @theme inline {
   /* WHY: Keep Tailwind utilities aligned with the approved tapUP design tokens. */
   --color-bg: #111A1E;
-  --color-card: #1B2A30;
-  --color-teal: #2DD4A0;
-  --color-amber: #F5B83D;
+  --color-card: var(--card);
+  --color-teal: var(--primary);
+  --color-amber: var(--accent);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-dm-sans);
 }
 
+html {
+  min-height: 100%;
+  background: var(--background);
+}
+
 body {
+  min-height: 100vh;
+  margin: 0;
   background: var(--background);
   color: var(--foreground);
+}
+
+/* WHY: Keep every route readable and usable in the intended single-phone viewport. */
+.app-shell {
+  display: flex;
+  width: min(100%, 390px);
+  height: 100vh;
+  height: 100svh;
+  margin-inline: auto;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--background);
+}
+
+.app-content {
+  /* WHY: Route content scrolls inside the viewport so a screen's min-height cannot push the notice off-screen. */
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.demo-banner {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1rem;
+  /* WHY: Keep the notice clear of the Next.js development indicator at the viewport's bottom-left. */
+  margin-left: 64px;
+  border-top: 1px solid rgb(243 247 245 / 10%);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 0.75rem;
+  text-align: center;
+  flex: 0 0 auto;
 }
