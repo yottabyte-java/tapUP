@@ -8,6 +8,7 @@ Write lib/validation.ts with zod schemas (all .strict() so extra fields are reje
 createSale (items with productId, qty 1-99), approveTab, payCash, demoPay, addCustomer (name 2-60 chars, SA phone format, consent must be literally true),
 setPin (4 digits), repayTab, lenderQuery (shop uuid, customer uuid).
 Totals are never accepted from the client; comment why (the server recomputes them).
+Also include: saleToken (exactly 32 lowercase hex characters), a South African phone schema (accept 0XX XXX XXXX and +27 formats, normalise to one stored format), and make every object schema .strict().
 
 Rules: follow 00_PROJECT_CONTEXT.md. Comment WHY in code. Stay inside this file's scope; put other-agent notes in docs/HANDOFF.md.
 When done, explain this file to me in 5 lines and tell me how to justify it if a judge asks.

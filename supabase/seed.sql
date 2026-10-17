@@ -1,5 +1,5 @@
--- WHY: This repeatable seed gives the judge a clearly labelled, shop-scoped demo without real
--- customer phone numbers or changes to any other shop's data.
+-- WHY: This repeatable seed gives the judge a clearly labelled, shop-scoped demo without
+-- using real customer data or changing any other shop's data.
 BEGIN;
 
 DO $seed_demo$
@@ -64,8 +64,8 @@ BEGIN
   INSERT INTO public.shops (id, owner_id, name, created_at)
     VALUES (demo_shop_id, owner_profile_id, 'Mama''s Spaza (demo)', now());
 
-  -- WHY: The records are phone-only demo customers with obviously fake numbers. Their demo PIN
-  -- (2468) is stored as a bcrypt hash because the approval trigger requires a PIN hash.
+  -- WHY: These are fictional demo numbers and no real person's data. The demo PIN (2468) is
+  -- stored as a bcrypt hash because the approval trigger requires a PIN hash.
   INSERT INTO public.shop_customers (
     id,
     shop_id,
@@ -78,13 +78,13 @@ BEGIN
     created_at
   )
   VALUES
-    (thabo_id, demo_shop_id, '0000000001', 'Thabo M.', 'active',
+    (thabo_id, demo_shop_id, '+27825550101', 'Thabo M.', 'active',
       now() - interval '31 days', demo_pin_hash, 20000, now() - interval '31 days'),
-    (nomsa_id, demo_shop_id, '0000000002', 'Nomsa K.', 'active',
+    (nomsa_id, demo_shop_id, '+27825550102', 'Nomsa K.', 'active',
       now() - interval '31 days', demo_pin_hash, 15000, now() - interval '31 days'),
-    (sipho_id, demo_shop_id, '0000000003', 'Sipho D.', 'active',
+    (sipho_id, demo_shop_id, '+27825550103', 'Sipho D.', 'active',
       now() - interval '31 days', demo_pin_hash, 10000, now() - interval '31 days'),
-    (new_customer_id, demo_shop_id, '0000000004', 'New Customer', 'active',
+    (new_customer_id, demo_shop_id, '+27825550104', 'New Customer', 'active',
       now() - interval '31 days', NULL, 0, now() - interval '31 days');
 END;
 $seed_demo$;
