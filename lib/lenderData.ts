@@ -56,6 +56,7 @@ function parseSales(value: unknown): BuyingPowerSale[] {
       || !isSafeInteger(entry.tab_cents)
       || !isSafeInteger(entry.paid_now_cents)
       || !isImmediatePaymentMethod(entry.paid_now_method)
+      || (entry.due_at !== null && typeof entry.due_at !== "string")
     ) {
       throw new LenderDataAccessError("Sales history contains an invalid record");
     }
@@ -69,6 +70,7 @@ function parseSales(value: unknown): BuyingPowerSale[] {
       tabCents: entry.tab_cents,
       paidNowCents: entry.paid_now_cents,
       paidNowMethod: entry.paid_now_method,
+      dueAt: entry.due_at,
     };
   });
 }
@@ -82,6 +84,8 @@ function parseRepayments(value: unknown): BuyingPowerRepayment[] {
     if (
       !isRecord(entry)
       || typeof entry.sale_id !== "string"
+      || !isSafeInteger(entry.amount_cents)
+      || entry.amount_cents <= 0
       || typeof entry.paid_at !== "string"
       || typeof entry.on_time !== "boolean"
     ) {
@@ -90,6 +94,7 @@ function parseRepayments(value: unknown): BuyingPowerRepayment[] {
 
     return {
       saleId: entry.sale_id,
+      amountCents: entry.amount_cents,
       paidAt: entry.paid_at,
       onTime: entry.on_time,
     };
@@ -136,7 +141,7 @@ export async function loadBuyingPowerHistory(
 
   const { data: salesData, error: salesError } = await supabase
     .from("sales")
-    .select("id, created_at, total_cents, method, status, tab_cents, paid_now_cents, paid_now_method")
+    .select("id, created_at, total_cents, method, status, tab_cents, paid_now_cents, paid_now_method, due_at")
     .eq("shop_id", shopId)
     .eq("shop_customer_id", customerId);
 
@@ -149,12 +154,10 @@ export async function loadBuyingPowerHistory(
   }
 
   const saleIds = sales.map((sale) => sale.id);
-  const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const { data: repaymentsData, error: repaymentsError } = await supabase
     .from("repayments")
-    .select("sale_id, paid_at, on_time")
-    .in("sale_id", saleIds)
-    .gte("paid_at", since);
+    .select("sale_id, amount_cents, paid_at, on_time")
+    .in("sale_id", saleIds);
 
   if (repaymentsError) {
     throw new LenderDataAccessError("Could not load repayment history");

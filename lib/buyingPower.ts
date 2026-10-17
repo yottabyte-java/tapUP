@@ -40,10 +40,12 @@ export interface BuyingPowerSale {
   tabCents?: number;
   paidNowCents?: number;
   paidNowMethod?: ImmediatePaymentMethod | null;
+  dueAt?: string | Date | null;
 }
 
 export interface BuyingPowerRepayment {
   saleId: string;
+  amountCents: number;
   paidAt: string | Date;
   onTime: boolean;
 }
@@ -212,6 +214,13 @@ export function calculateBuyingPower(
 
   const lateRepayments = repaymentsInWindow.filter((repayment) => !repayment.onTime).length;
   const repaymentEventsBySale = new Map<string, BuyingPowerRepayment[]>();
+  const repaidCentsBySale = new Map<string, number>();
+  for (const repayment of history.repayments) {
+    assertCents(repayment.amountCents, "repayment.amountCents", false);
+    const repaidCents = (repaidCentsBySale.get(repayment.saleId) ?? 0) + repayment.amountCents;
+    assertCents(repaidCents, "repaid tab balance");
+    repaidCentsBySale.set(repayment.saleId, repaidCents);
+  }
   for (const repayment of repaymentsInWindow) {
     const events = repaymentEventsBySale.get(repayment.saleId) ?? [];
     events.push(repayment);
@@ -249,6 +258,15 @@ export function calculateBuyingPower(
     : calculatedScore;
   const scoreLimit = limitForScore(score);
 
+  const hasOverdueUnpaidTab = history.sales.some((sale) =>
+    sale.method === "tab"
+      && sale.status === "approved"
+      && sale.dueAt !== undefined
+      && sale.dueAt !== null
+      && timestamp(sale.dueAt, "sale.dueAt") < nowMilliseconds
+      && (sale.tabCents ?? 0) - (repaidCentsBySale.get(sale.id) ?? 0) > 0,
+  );
+
   // WHY: No purchase means no buying power; the first completed purchase unlocks exactly R50.
   let limitCents = hasCompletedPurchase
     ? firstPurchaseInWindow ? LIMIT_STEP_CENTS : Math.max(scoreLimit, LIMIT_STEP_CENTS)
@@ -258,6 +276,9 @@ export function calculateBuyingPower(
   const lateRepaymentCap = lateRepayments >= 2;
   if (lateRepaymentCap) {
     limitCents = Math.min(limitCents, LIMIT_STEP_CENTS);
+  }
+  if (hasOverdueUnpaidTab) {
+    limitCents = 0;
   }
 
   const level = limitCents / LIMIT_STEP_CENTS;
@@ -287,6 +308,9 @@ export function calculateBuyingPower(
   }
   if (lateRepaymentCap) {
     reasons.push("Two or more late repayments cap the limit at R50");
+  }
+  if (hasOverdueUnpaidTab) {
+    reasons.push("A tab is overdue. Repay it to unlock new credit.");
   }
   reasons.push(`Buying-power limit: ${formatRand(limitCents)}`);
 

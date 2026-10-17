@@ -51,7 +51,11 @@ function makeSale(row: SeedSale): BuyingPowerSale {
     status: row.method === "tab"
       ? isRepaidTab ? "repaid" : "approved"
       : "paid",
-    ...(row.method === "tab" ? { tabCents: row.totalCents, paidNowCents: 0 } : {}),
+    ...(row.method === "tab" ? {
+      tabCents: row.totalCents,
+      paidNowCents: 0,
+      dueAt: new Date(createdAt.getTime() + 14 * 24 * 60 * 60 * 1000),
+    } : {}),
   };
 }
 
@@ -69,6 +73,7 @@ function historyFor(customer: SeedSale["customer"]): BuyingPowerHistory {
     );
     return [{
       saleId: `tapup-demo-sale-${row.saleNo}`,
+      amountCents: row.totalCents,
       paidAt,
       onTime: row.repaymentDaysAfterSale <= 14,
     }];

@@ -48,6 +48,7 @@ function stepBoundaryHistory(scoreCase: number): BuyingPowerHistory {
       // WHY: One late partial repayment on an open tab lowers points while keeping repayment history neutral.
       repayments: [{
         saleId: sales[0].id,
+        amountCents: 1,
         paidAt: seedNow,
         onTime: false,
       }],
@@ -70,6 +71,7 @@ function stepBoundaryHistory(scoreCase: number): BuyingPowerHistory {
       sales,
       repayments: sales.slice(0, 2).map((item, index) => ({
         saleId: item.id,
+        amountCents: item.tabCents ?? 0,
         paidAt: new Date(seedNow.getTime() - index * DAY),
         onTime: true,
       })),
@@ -107,6 +109,7 @@ describe("calculateBuyingPower", () => {
       sales,
       repayments: sales.map((item, index) => ({
         saleId: item.id,
+        amountCents: item.tabCents ?? 0,
         paidAt: new Date(seedNow.getTime() - index * 7 * DAY),
         onTime: true,
       })),
@@ -123,6 +126,7 @@ describe("calculateBuyingPower", () => {
     );
     const repayments = sales.map((item, index) => ({
       saleId: item.id,
+      amountCents: item.tabCents ?? 0,
       paidAt: new Date(seedNow.getTime() - index * 3 * DAY),
       onTime: index !== 0,
     }));
@@ -144,6 +148,7 @@ describe("calculateBuyingPower", () => {
     );
     const repayments = sales.slice(0, 10).map((item, index) => ({
       saleId: item.id,
+      amountCents: item.tabCents ?? 0,
       paidAt: new Date(seedNow.getTime() - index * DAY),
       onTime: index >= 2,
     }));
@@ -187,6 +192,53 @@ describe("calculateBuyingPower", () => {
     expect(sipho.reasons).toContain("No tabs fully repaid in the last 30 days; repayment score is neutral (15/30)");
   });
 
+  it("sets Sipho's buying power to zero while his seeded tab is overdue and unpaid", () => {
+    const result = calculateBuyingPower(seedHistories.sipho, seedNow);
+
+    expect(result.limitCents).toBe(0);
+    expect(result.level).toBe(0);
+    expect(result.reasons).toContain("A tab is overdue. Repay it to unlock new credit.");
+  });
+
+  it("restores normal buying power after Sipho repays the overdue tab", () => {
+    const overdueTab = seedHistories.sipho.sales.find((item) => item.status === "approved");
+    expect(overdueTab).toBeDefined();
+    if (!overdueTab) {
+      throw new Error("Seeded Sipho history must include an approved tab");
+    }
+
+    const afterRepayment: BuyingPowerHistory = {
+      sales: seedHistories.sipho.sales.map((item) =>
+        item.id === overdueTab.id ? { ...item, status: "repaid" } : item,
+      ),
+      repayments: [{
+        saleId: overdueTab.id,
+        amountCents: overdueTab.tabCents ?? 0,
+        paidAt: seedNow,
+        onTime: true,
+      }],
+    };
+    const result = calculateBuyingPower(afterRepayment, seedNow);
+
+    expect(result.limitCents).toBeGreaterThan(0);
+    expect(result.reasons).not.toContain("A tab is overdue. Repay it to unlock new credit.");
+  });
+
+  it("does not penalise an approved tab that is not yet due", () => {
+    const futureDueTab = {
+      ...sale("future-tab", 2, 10_000, "tab", "approved"),
+      dueAt: new Date(seedNow.getTime() + DAY),
+    };
+    const history: BuyingPowerHistory = {
+      sales: [...historyWithDailySales(4, 55_001).sales, futureDueTab],
+      repayments: [],
+    };
+    const result = calculateBuyingPower(history, seedNow);
+
+    expect(result.limitCents).toBeGreaterThan(0);
+    expect(result.reasons).not.toContain("A tab is overdue. Repay it to unlock new credit.");
+  });
+
   it("raises the same customer's score after their first on-time tab repayment", () => {
     const tab = sale("first-tab", 5, 10_000, "tab", "approved");
     const earlierPurchase = sale("earlier-purchase", 10, 1_000);
@@ -198,6 +250,7 @@ describe("calculateBuyingPower", () => {
       sales: [{ ...tab, status: "repaid" }, earlierPurchase],
       repayments: [{
         saleId: tab.id,
+        amountCents: tab.tabCents ?? 0,
         paidAt: new Date(seedNow.getTime() - 2 * DAY),
         onTime: true,
       }],
