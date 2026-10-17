@@ -9,6 +9,7 @@ Query: ?shop=<uuid>&customer=<uuid>. Use the service-role client on the server o
 Return ONLY { limitCents, level, reasons, demo: true }. No names, phones or sales data.
 401 for a bad key, 400 for bad input, 429 after too many calls (use lib/rateLimit.ts once agent 5 adds it; for now leave a TODO comment).
 Add a comment block explaining this is how a lender would buy our data (the revenue model).
+Load history with the service-role client only on the server. Return the demo flag "demo": true. If the customer or shop is not found, return 404 with a generic message and do not say which one was missing. Add a test for the 401, 400 and 404 cases that does not need a live database (mock the data layer).
 
 Rules: follow 00_PROJECT_CONTEXT.md. Comment WHY in code. Stay inside this file's scope; put other-agent notes in docs/HANDOFF.md.
 When done, explain this file to me in 5 lines and tell me how to justify it if a judge asks.
