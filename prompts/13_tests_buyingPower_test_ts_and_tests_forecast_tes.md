@@ -9,6 +9,7 @@ one late repayment lowers the score; two late repayments cap level at 1; limit n
 forecast with clear month-end pattern; forecast with no history. Use readable test names.
 
 Also add tests using the seed histories: Thabo (frequent, always on time) must score higher than Nomsa (one late), who must score higher than Sipho (overdue unpaid tab); the new customer must be R0. Add a test that the same customer's score rises after their first on-time repayment.
+Also test likelyToNeedTab using Thabo's seeded pattern, and a customer with no month-end tabs (likely=false).
 
 Rules: follow 00_PROJECT_CONTEXT.md. Comment WHY in code. Stay inside this file's scope; put other-agent notes in docs/HANDOFF.md.
 When done, explain this file to me in 5 lines and tell me how to justify it if a judge asks.
