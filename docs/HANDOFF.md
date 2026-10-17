@@ -29,6 +29,8 @@
 - Support smartphone customers opening a QR only when signed in and linked to that shop.
   Phone-only customers enter PIN on the owner’s device.
 - The first working slice is project setup/auth, then a complete shop-QR sale and Pay path.
+- Add request-level session refresh in the Next.js 16 `proxy.ts`: Server Components cannot write
+  refreshed auth cookies, so the Supabase server client intentionally skips cookie writes there.
 
 ## For Security
 
