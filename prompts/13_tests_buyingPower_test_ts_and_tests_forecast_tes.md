@@ -10,7 +10,9 @@ forecast with clear month-end pattern; forecast with no history. Use readable te
 
 Also add tests using the seed histories: Thabo (frequent, always on time) must score higher than Nomsa (one late), who must score higher than Sipho (overdue unpaid tab); the new customer must be R0. Add a test that the same customer's score rises after their first on-time repayment.
 Also test likelyToNeedTab using Thabo's seeded pattern, and a customer with no month-end tabs (likely=false).
-
+Also write tests/money.test.ts (toCents("34.90")=3490, toCents(0.1+0.2)=30, formatRand(124850)="R1,248.50", subCents rejects negatives).
+Also test with the seed histories: Thabo scores higher than Nomsa (one late), who scores higher than Sipho (overdue unpaid tab); the new customer is R0; and the same customer's score rises after their first on-time repayment.
+Also test likelyToNeedTab for a customer with a month-end tab pattern and one without.
 Rules: follow 00_PROJECT_CONTEXT.md. Comment WHY in code. Stay inside this file's scope; put other-agent notes in docs/HANDOFF.md.
 When done, explain this file to me in 5 lines and tell me how to justify it if a judge asks.
 ```
