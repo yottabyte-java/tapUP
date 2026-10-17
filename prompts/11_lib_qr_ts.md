@@ -7,6 +7,7 @@ Paste first: 00_PROJECT_CONTEXT.md
 Write lib/qr.ts. createSaleToken() -> { token, tokenHash, expiresAt } with a random 128-bit token (crypto.randomBytes), expiry 5 minutes.
 verifySaleToken(token, storedHash, expiresAt, usedAt, now) -> 'ok' | 'expired' | 'used' | 'invalid'. Store only the hash.
 Use constant-time comparison. Comment why we never store the raw token.
+The schema has qr_token_hash, expires_at and used_at columns on sales. Hash tokens with SHA-256 (hex) so the server can look a sale up by hash, and compare hashes in constant time. A single-use token means used_at is set the first time it is accepted.
 
 Rules: follow 00_PROJECT_CONTEXT.md. Comment WHY in code. Stay inside this file's scope; put other-agent notes in docs/HANDOFF.md.
 When done, explain this file to me in 5 lines and tell me how to justify it if a judge asks.
