@@ -255,3 +255,7 @@ GRANT SELECT (
 
 GRANT SELECT (id, sale_id, amount_cents, paid_at, on_time, created_at)
   ON public.repayments TO authenticated;
+
+-- WHY: Automatic table exposure is disabled, so the server-only service role needs explicit grants.
+GRANT USAGE ON SCHEMA public TO service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO service_role;
