@@ -38,6 +38,7 @@ export function BarcodeScanner({
   const [torchAvailable, setTorchAvailable] = useState(false);
   const [torchEnabled, setTorchEnabled] = useState(false);
   const [torchError, setTorchError] = useState("");
+  const scannerElementRef = useRef<HTMLDivElement | null>(null);
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const scanHandledRef = useRef(false);
   const onScanRef = useRef(onScan);
@@ -52,6 +53,16 @@ export function BarcodeScanner({
 
     async function startScanner() {
       try {
+        const scannerElement = scannerElementRef.current;
+        if (!scannerElement) {
+          throw new Error("CameraPreviewUnavailable");
+        }
+
+        const { width: containerWidth, height: containerHeight } = scannerElement.getBoundingClientRect();
+        if (containerWidth <= 0 || containerHeight <= 0) {
+          throw new Error("CameraPreviewUnavailable");
+        }
+
         if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
           throw new Error("CameraUnavailable");
         }
@@ -80,8 +91,8 @@ export function BarcodeScanner({
           {
             fps: 10,
             qrbox: (width, height) => ({
-              width: Math.min(Math.floor(width * 0.9), 320),
-              height: Math.min(Math.floor(height * 0.45), 120),
+              width: Math.max(150, Math.min(Math.floor(width * 0.9), 300)),
+              height: Math.max(150, Math.min(Math.floor(height * 0.9), 300)),
             }),
           },
           async (barcode) => {
@@ -182,12 +193,13 @@ export function BarcodeScanner({
           ) : <span className="h-11 w-11" />}
         </header>
 
-        <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-[#090D0F]">
+        <div className="relative flex min-h-[280px] flex-1 items-center justify-center overflow-hidden bg-[#090D0F]">
           <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-transparent to-black/50" />
           <div
             aria-label="Live barcode camera preview"
             className="absolute inset-0 overflow-hidden"
             id={scannerElementId}
+            ref={scannerElementRef}
           />
 
           {status !== "fallback" && (

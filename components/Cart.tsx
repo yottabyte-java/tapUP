@@ -10,13 +10,15 @@ export type SaleItemInput = {
   qty: number;
 };
 
-type CartLine = {
+export type CartLine = {
   product: Product;
   qty: number;
 };
 
 type CartProps = {
   initialItems?: Product[];
+  items?: CartLine[];
+  onItemsChange?: (items: CartLine[]) => void;
   onCharge: (items: SaleItemInput[]) => void | Promise<void>;
 };
 
@@ -47,13 +49,24 @@ function ProductImage({ product }: { product: Product }) {
 
 export function Cart({
   initialItems = DESIGN_SAMPLE_PRODUCTS,
+  items,
+  onItemsChange,
   onCharge,
 }: CartProps) {
-  const [lines, setLines] = useState<CartLine[]>(() =>
+  const [localLines, setLocalLines] = useState<CartLine[]>(() =>
     initialItems.map((product) => ({ product, qty: 1 })),
   );
   const [isCharging, setIsCharging] = useState(false);
   const [chargeError, setChargeError] = useState("");
+  const lines = items ?? localLines;
+
+  function updateLines(update: (currentLines: CartLine[]) => CartLine[]) {
+    if (items !== undefined) {
+      onItemsChange?.(update(items));
+      return;
+    }
+    setLocalLines(update);
+  }
 
   const totalCents = lines.reduce(
     (total, line) => addCents(total, line.product.priceCents * line.qty),
@@ -61,7 +74,7 @@ export function Cart({
   );
 
   function updateQuantity(productId: string, change: -1 | 1) {
-    setLines((currentLines) =>
+    updateLines((currentLines) =>
       currentLines.map((line) =>
         line.product.id === productId
           ? { ...line, qty: Math.min(99, Math.max(1, line.qty + change)) }
@@ -71,7 +84,7 @@ export function Cart({
   }
 
   function removeProduct(productId: string) {
-    setLines((currentLines) =>
+    updateLines((currentLines) =>
       currentLines.filter((line) => line.product.id !== productId),
     );
   }
