@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { calculateBuyingPower, type BuyingPowerHistory, type BuyingPowerSale } from "@/lib/buyingPower";
 import { products } from "@/lib/products";
 import { isLocked, registerFailure, verifyPin } from "@/lib/pin";
-import { createSaleToken } from "@/lib/qr";
+import { createSaleToken, verifySaleToken } from "@/lib/qr";
 import {
   approveTabSchema,
   createSaleSchema,
@@ -13,6 +13,7 @@ import {
 } from "@/lib/validation";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient as createSessionClient } from "@/lib/supabase/server";
+import { z } from "zod";
 
 type ActionFailure = { ok: false; error: string };
 
@@ -482,6 +483,231 @@ export async function createSale(input: unknown): Promise<
     expiresAt: token.expiresAt,
     totalCents,
   };
+}
+
+const customerPayTokenSchema = saleTokenSchema;
+const customerTabRequestSchema = z.object({
+  token: saleTokenSchema,
+  paidNowMethod: z.enum(["demo_card", "cash"]),
+}).strict();
+
+type CustomerPaySaleContext =
+  | {
+    ok: true;
+    admin: ReturnType<typeof createAdminClient>;
+    sale: SaleRecord;
+    shopCustomerId: string;
+    limitCents: number;
+    availableCents: number;
+    level: number;
+    nextLimitCents: number;
+  }
+  | ActionFailure;
+
+async function getCustomerPaySaleContext(input: unknown): Promise<CustomerPaySaleContext> {
+  const parsed = customerPayTokenSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "invalid_link" };
+
+  const customer = await getCustomerContext();
+  if (!customer.ok) return customer;
+
+  const tokenHash = createHash("sha256").update(parsed.data, "utf8").digest("hex");
+  const { data, error } = await customer.admin
+    .from("sales")
+    .select("id, shop_id, shop_customer_id, total_cents, method, status, paid_now_cents, tab_cents, paid_now_method, paid_now_confirmed_at, qr_token_hash, expires_at, used_at")
+    .eq("qr_token_hash", tokenHash)
+    .maybeSingle();
+  if (error) return { ok: false, error: "unavailable" };
+
+  const sale = parseSaleRecord(data);
+  if (
+    !sale
+    || verifySaleToken(parsed.data, sale.qrTokenHash, sale.expiresAt, sale.usedAt) !== "ok"
+    || sale.status !== "pending"
+    || sale.method !== "pending"
+    || sale.shopCustomerId !== null
+  ) {
+    // WHY: Unknown, expired, used, and otherwise unavailable links get the same public response.
+    return { ok: false, error: "invalid_link" };
+  }
+
+  const { data: shopCustomer, error: customerError } = await customer.admin
+    .from("shop_customers")
+    .select("id, status, consent_at")
+    .eq("shop_id", sale.shopId)
+    .eq("customer_profile_id", customer.userId)
+    .maybeSingle();
+  if (customerError) return { ok: false, error: "unavailable" };
+  if (!shopCustomer || shopCustomer.status !== "active" || !shopCustomer.consent_at) {
+    return { ok: false, error: "invalid_link" };
+  }
+
+  let history: BuyingPowerHistory;
+  let buyingPower: ReturnType<typeof calculateBuyingPower>;
+  let outstandingCents: number;
+  try {
+    history = await loadCustomerHistory(customer.admin, sale.shopId, shopCustomer.id);
+    buyingPower = calculateBuyingPower(history, new Date());
+    outstandingCents = outstandingBalanceCents(history);
+  } catch {
+    return { ok: false, error: "buying_power_unavailable" };
+  }
+
+  return {
+    ok: true,
+    admin: customer.admin,
+    sale,
+    shopCustomerId: shopCustomer.id,
+    limitCents: buyingPower.limitCents,
+    availableCents: Math.max(0, buyingPower.limitCents - outstandingCents),
+    level: buyingPower.level,
+    nextLimitCents: buyingPower.nextLimitCents,
+  };
+}
+
+export async function getCustomerPayDetails(input: unknown): Promise<
+  ActionFailure | ActionSuccess<{
+    totalCents: number;
+    limitCents: number;
+    availableCents: number;
+    level: number;
+    nextLimitCents: number;
+    tabCents: number;
+    remainderCents: number;
+  }>
+> {
+  const context = await getCustomerPaySaleContext(input);
+  if (!context.ok) return context;
+
+  const tabCents = Math.min(context.sale.totalCents, context.availableCents);
+  return {
+    ok: true,
+    totalCents: context.sale.totalCents,
+    limitCents: context.limitCents,
+    availableCents: context.availableCents,
+    level: context.level,
+    nextLimitCents: context.nextLimitCents,
+    tabCents,
+    remainderCents: context.sale.totalCents - tabCents,
+  };
+}
+
+export async function requestCustomerTab(input: unknown): Promise<
+  ActionFailure | ActionSuccess<{
+    saleId: string;
+    status: "tab_requested";
+    tabCents: number;
+    paidNowCents: number;
+    paidNowMethod: "demo_card" | "cash" | null;
+  }>
+> {
+  const parsed = customerTabRequestSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "invalid_input" };
+
+  const context = await getCustomerPaySaleContext(parsed.data.token);
+  if (!context.ok) return context;
+
+  const tabCents = Math.min(context.sale.totalCents, context.availableCents);
+  if (tabCents <= 0) return { ok: false, error: "no_buying_power" };
+
+  const now = new Date().toISOString();
+  const paidNowCents = context.sale.totalCents - tabCents;
+  const paidNowMethod = paidNowCents > 0 ? parsed.data.paidNowMethod : null;
+  const { data, error } = await context.admin
+    .from("sales")
+    .update({
+      shop_customer_id: context.shopCustomerId,
+      method: "tab",
+      paid_now_cents: paidNowCents,
+      tab_cents: tabCents,
+      paid_now_method: paidNowMethod,
+      // WHY: The card/wallet option is explicitly simulated, so its remainder is confirmed without collecting payment data.
+      paid_now_confirmed_at: paidNowMethod === "demo_card" ? now : null,
+      used_at: now,
+      status: "tab_requested",
+    })
+    .eq("id", context.sale.id)
+    .eq("shop_id", context.sale.shopId)
+    .eq("status", "pending")
+    .eq("method", "pending")
+    .is("used_at", null)
+    .gt("expires_at", now)
+    .select("id")
+    .maybeSingle();
+  if (error || !data) return { ok: false, error: "sale_not_payable" };
+
+  return {
+    ok: true,
+    saleId: context.sale.id,
+    status: "tab_requested",
+    tabCents,
+    paidNowCents,
+    paidNowMethod,
+  };
+}
+
+export async function requestCustomerCash(input: unknown): Promise<
+  ActionFailure | ActionSuccess<{ saleId: string; status: "cash_requested" }>
+> {
+  const parsed = customerPayTokenSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "invalid_link" };
+
+  const customer = await getCustomerContext();
+  if (!customer.ok) return customer;
+
+  const tokenHash = createHash("sha256").update(parsed.data, "utf8").digest("hex");
+  const { data: saleData, error: saleError } = await customer.admin
+    .from("sales")
+    .select("id, shop_id, shop_customer_id, total_cents, method, status, paid_now_cents, tab_cents, paid_now_method, paid_now_confirmed_at, qr_token_hash, expires_at, used_at")
+    .eq("qr_token_hash", tokenHash)
+    .maybeSingle();
+  if (saleError) return { ok: false, error: "unavailable" };
+
+  const sale = parseSaleRecord(saleData);
+  if (
+    !sale
+    || verifySaleToken(parsed.data, sale.qrTokenHash, sale.expiresAt, sale.usedAt) !== "ok"
+    || sale.status !== "pending"
+    || sale.method !== "pending"
+    || sale.shopCustomerId !== null
+  ) {
+    return { ok: false, error: "invalid_link" };
+  }
+
+  const { data: shopCustomer, error: customerError } = await customer.admin
+    .from("shop_customers")
+    .select("id, status, consent_at")
+    .eq("shop_id", sale.shopId)
+    .eq("customer_profile_id", customer.userId)
+    .maybeSingle();
+  if (customerError) return { ok: false, error: "unavailable" };
+  if (!shopCustomer || shopCustomer.status !== "active" || !shopCustomer.consent_at) {
+    return { ok: false, error: "invalid_link" };
+  }
+
+  const now = new Date().toISOString();
+  const { data, error } = await customer.admin
+    .from("sales")
+    .update({
+      shop_customer_id: shopCustomer.id,
+      method: "cash",
+      paid_now_cents: sale.totalCents,
+      tab_cents: 0,
+      paid_now_method: "cash",
+      paid_now_confirmed_at: null,
+      used_at: now,
+    })
+    .eq("id", sale.id)
+    .eq("shop_id", sale.shopId)
+    .eq("status", "pending")
+    .eq("method", "pending")
+    .is("used_at", null)
+    .gt("expires_at", now)
+    .select("id")
+    .maybeSingle();
+  if (error || !data) return { ok: false, error: "sale_not_payable" };
+
+  return { ok: true, saleId: sale.id, status: "cash_requested" };
 }
 
 export async function approveTab(input: unknown): Promise<
