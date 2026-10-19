@@ -6,7 +6,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Cart, type CartLine, type SaleItemInput } from "@/components/Cart";
-import { createSale } from "@/lib/actions/sales";
+import { PinPad } from "@/components/PinPad";
+import { approveTab, createSale } from "@/lib/actions/sales";
 import { formatRand } from "@/lib/money";
 import { getProductByBarcode, products, type Product } from "@/lib/products";
 import { createClient } from "@/lib/supabase/client";
@@ -14,9 +15,16 @@ import { createClient } from "@/lib/supabase/client";
 type PageStatus = "checking" | "ready" | "error";
 
 type ActiveSale = {
+  saleId: string;
   paymentUrl: string;
   totalCents: number;
   expiresAt: string;
+};
+
+type PhoneCustomer = {
+  id: string;
+  displayName: string;
+  phone: string;
 };
 
 function getSaleErrorMessage(error: string): string {
@@ -120,6 +128,9 @@ export default function ShopSellPage() {
   const [cartItems, setCartItems] = useState<CartLine[]>([]);
   const [activeSale, setActiveSale] = useState<ActiveSale | null>(null);
   const [now, setNow] = useState(0);
+  const [phoneCustomers, setPhoneCustomers] = useState<PhoneCustomer[]>([]);
+  const [pinApprovalOpen, setPinApprovalOpen] = useState(false);
+  const [selectedPhoneCustomerId, setSelectedPhoneCustomerId] = useState("");
 
   useEffect(() => {
     let disposed = false;
@@ -150,7 +161,7 @@ export default function ShopSellPage() {
 
         const { data: shop, error: shopError } = await supabase
           .from("shops")
-          .select("name")
+          .select("id, name")
           .eq("owner_id", user.id)
           .maybeSingle();
         if (shopError) throw shopError;
@@ -158,8 +169,23 @@ export default function ShopSellPage() {
           throw new Error("No shop is linked to this owner account.");
         }
 
+        const { data: customers, error: customersError } = await supabase
+          .from("shop_customers")
+          .select("id, display_name, customer_phone, customer_profile_id, status, consent_at")
+          .eq("shop_id", shop.id)
+          .eq("status", "active")
+          .is("customer_profile_id", null)
+          .not("consent_at", "is", null)
+          .order("display_name");
+        if (customersError) throw customersError;
+
         if (!disposed) {
           setShopName(shop.name);
+          setPhoneCustomers((customers ?? []).map((customer) => ({
+            id: customer.id,
+            displayName: customer.display_name,
+            phone: customer.customer_phone,
+          })));
           setStatus("ready");
         }
       } catch {
@@ -216,10 +242,13 @@ export default function ShopSellPage() {
         return;
       }
       setActiveSale({
+        saleId: result.saleId,
         paymentUrl: `${window.location.origin}/pay/${result.token}`,
         totalCents: result.totalCents,
         expiresAt: result.expiresAt,
       });
+      setPinApprovalOpen(false);
+      setSelectedPhoneCustomerId("");
       setNow(Date.now());
     } catch {
       setPageError("We couldn't create the sale. Please check your connection and try again.");
@@ -323,6 +352,70 @@ export default function ShopSellPage() {
               </div>
               <p className="mt-4 text-xs text-foreground/70">Scan with the customer&apos;s phone to continue.</p>
               <p className="mt-2 text-xs text-foreground/60">One-time link · expires in 5 minutes</p>
+              <div className="mt-5 w-full border-t border-white/10 pt-4">
+                {!pinApprovalOpen ? (
+                  <button
+                    className="min-h-11 w-full rounded-xl border border-teal/50 px-4 text-sm text-teal hover:bg-white/5"
+                    onClick={() => setPinApprovalOpen(true)}
+                    type="button"
+                  >
+                    Customer without a smartphone
+                  </button>
+                ) : (
+                  <div className="w-full">
+                    <label className="block text-left text-xs font-medium" htmlFor="phone-customer">Choose customer</label>
+                    {phoneCustomers.length > 0 ? (
+                      <select
+                        className="mt-2 min-h-11 w-full rounded-lg border border-white/15 bg-bg px-3 text-sm"
+                        id="phone-customer"
+                        onChange={(event) => setSelectedPhoneCustomerId(event.target.value)}
+                        value={selectedPhoneCustomerId}
+                      >
+                        <option value="">Select a customer</option>
+                        {phoneCustomers.map((customer) => (
+                          <option key={customer.id} value={customer.id}>
+                            {customer.displayName} · {customer.phone}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p className="mt-2 text-left text-sm text-foreground/70">
+                        No consented phone-only customers yet. <Link className="text-teal underline" href="/shop/customers/new">Add a customer</Link>
+                      </p>
+                    )}
+                    {selectedPhoneCustomerId && (
+                      <div className="mt-5 rounded-xl border border-white/10 bg-bg p-3">
+                        <PinPad
+                          onSubmit={async (pin) => {
+                            const result = await approveTab({
+                              saleId: activeSale.saleId,
+                              shopCustomerId: selectedPhoneCustomerId,
+                              pin,
+                            });
+                            if (!result.ok) return result;
+                            setActiveSale(null);
+                            setCartItems([]);
+                            setPinApprovalOpen(false);
+                            setSelectedPhoneCustomerId("");
+                            setPageError("Tab approved.");
+                            return { ok: true };
+                          }}
+                        />
+                      </div>
+                    )}
+                    <button
+                      className="mt-3 min-h-11 w-full rounded-lg text-sm text-foreground/70 hover:text-foreground"
+                      onClick={() => {
+                        setPinApprovalOpen(false);
+                        setSelectedPhoneCustomerId("");
+                      }}
+                      type="button"
+                    >
+                      Cancel PIN approval
+                    </button>
+                  </div>
+                )}
+              </div>
             </>
           )}
 

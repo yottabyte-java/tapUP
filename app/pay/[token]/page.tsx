@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { getCustomerPayConsentState, linkWithConsent } from "@/lib/actions/customers";
 import {
   demoPay,
   getCustomerPayDetails,
@@ -49,6 +50,64 @@ function ExpiredLink() {
   );
 }
 
+function ConsentRequired({ token, showError }: { token: string; showError: boolean }) {
+  async function submitConsent(formData: FormData) {
+    "use server";
+
+    const consent = formData.get("consent") === "on";
+    const result = await linkWithConsent({ token, consent });
+    if (!result.ok) {
+      if (result.error === "unauthorized") redirect("/login");
+      if (result.error === "invalid_link" || result.error === "forbidden") redirect(`/pay/${token}`);
+      redirect(`/pay/${token}?error=consent`);
+    }
+    redirect(`/pay/${token}`);
+  }
+
+  return (
+    <main className="flex min-h-full flex-col px-3 py-3">
+      <section className="flex min-h-full flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-4 py-5">
+        <header className="flex min-h-11 items-center gap-3">
+          <Link
+            aria-label="Back to my account"
+            className="flex h-11 w-11 items-center justify-center rounded-lg text-foreground hover:text-teal"
+            href="/me"
+          >
+            <span aria-hidden="true" className="text-2xl">‹</span>
+          </Link>
+          <h1 className="text-base font-semibold">Customer consent</h1>
+        </header>
+        <section className="mt-5 rounded-xl bg-card p-4">
+          <h2 className="text-sm font-semibold">POPIA consent</h2>
+          <p className="mt-2 text-sm leading-relaxed text-foreground/80">
+            The shop uses your purchase and repayment history to keep a record and calculate buying power at this shop.
+          </p>
+          {showError && (
+            <p className="mt-3 text-sm text-red-200" role="alert">
+              Please confirm consent before continuing.
+            </p>
+          )}
+          <form action={submitConsent} className="mt-4">
+            <label className="flex cursor-pointer items-start gap-2.5 text-sm leading-relaxed">
+              <input className="mt-0.5 h-5 w-5 shrink-0 accent-teal" name="consent" required type="checkbox" />
+              <span>I confirm that I have the customer&apos;s consent to collect and store their personal information for this service.</span>
+            </label>
+            <button
+              className="mt-5 min-h-12 w-full rounded-full bg-teal px-5 py-3 text-sm font-semibold text-[#041A1E]"
+              type="submit"
+            >
+              Continue to payment
+            </button>
+          </form>
+          <p className="mt-4 text-center text-xs text-foreground/65">
+            Your account will only be linked to this shop after you give consent.
+          </p>
+        </section>
+      </section>
+    </main>
+  );
+}
+
 function LoadingPayment() {
   return (
     <main className="flex min-h-full items-center justify-center px-6">
@@ -81,7 +140,19 @@ async function CustomerPayContent({ params, searchParams }: PageProps) {
 
   if (!result.ok) {
     if (result.error === "unauthorized") redirect("/login");
-    if (result.error === "invalid_link" || result.error === "forbidden") return <ExpiredLink />;
+    if (result.error === "invalid_link") {
+      const consentState = await getCustomerPayConsentState(token);
+      if (!consentState.ok) {
+        if (consentState.error === "unauthorized") redirect("/login");
+        if (consentState.error !== "invalid_link" && consentState.error !== "forbidden") {
+          return <PaymentError token={token} />;
+        }
+      } else if (consentState.needsConsent) {
+        return <ConsentRequired showError={query.error === "consent"} token={token} />;
+      }
+      return <ExpiredLink />;
+    }
+    if (result.error === "forbidden") return <ExpiredLink />;
     return <PaymentError token={token} />;
   }
 
@@ -192,10 +263,12 @@ async function CustomerPayContent({ params, searchParams }: PageProps) {
           </p>
         </section>
 
-        <section aria-label="Tab amount" className="mt-2.5 rounded-xl bg-card px-3 py-2.5">
-          <p className="text-[11px] text-foreground/75">You can put on tab <span className="text-foreground/55">(within your limit)</span></p>
-          <p className="mt-0.5 text-lg font-bold text-teal">{formatRand(details.tabCents)}</p>
-        </section>
+        {details.availableCents > 0 && (
+          <section aria-label="Tab amount" className="mt-2.5 rounded-xl bg-card px-3 py-2.5">
+            <p className="text-[11px] text-foreground/75">You can put on tab <span className="text-foreground/55">(within your limit)</span></p>
+            <p className="mt-0.5 text-lg font-bold text-teal">{formatRand(details.tabCents)}</p>
+          </section>
+        )}
 
         <section aria-label="Amount to pay now" className="mt-2 rounded-xl bg-card px-3 py-2.5">
           <div className="flex items-center justify-between gap-2 text-xs">

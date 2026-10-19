@@ -1,9 +1,11 @@
 "use server";
 
+import { createHash } from "node:crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient as createSessionClient } from "@/lib/supabase/server";
 import { hashPin, isLocked, registerFailure, verifyPin } from "@/lib/pin";
-import { addCustomerSchema, setPinSchema } from "@/lib/validation";
+import { addCustomerSchema, saleTokenSchema, setPinSchema } from "@/lib/validation";
+import { verifySaleToken } from "@/lib/qr";
 import { z } from "zod";
 
 type ActionFailure = { ok: false; error: string };
@@ -31,6 +33,115 @@ const verifyPinSchema = z.object({
   shopCustomerId: z.string().uuid(),
   pin: z.string().regex(/^\d{4}$/),
 }).strict();
+const linkWithConsentSchema = z.object({
+  token: saleTokenSchema,
+  consent: z.literal(true),
+}).strict();
+
+type PayConsentContext =
+  | {
+    ok: true;
+    sessionClient: Awaited<ReturnType<typeof createSessionClient>>;
+    shopCustomerId: string;
+  }
+  | ActionFailure;
+
+async function getPayConsentContext(input: unknown): Promise<PayConsentContext> {
+  const parsed = saleTokenSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "invalid_link" };
+
+  let sessionClient;
+  try {
+    sessionClient = await createSessionClient();
+  } catch {
+    return { ok: false, error: "unavailable" };
+  }
+  const { data: { user }, error: authError } = await sessionClient.auth.getUser();
+  if (authError || !user) return { ok: false, error: "unauthorized" };
+
+  // WHY: The profile phone must match the shop's existing record before the restricted link function can associate it.
+  const { data: profile, error: profileError } = await sessionClient
+    .from("profiles")
+    .select("role, phone")
+    .eq("id", user.id)
+    .maybeSingle();
+  if (profileError) return { ok: false, error: "unavailable" };
+  if (!profile || profile.role !== "customer") return { ok: false, error: "forbidden" };
+  if (typeof profile.phone !== "string" || profile.phone.length === 0) {
+    return { ok: false, error: "invalid_link" };
+  }
+
+  let admin;
+  try {
+    admin = createAdminClient();
+  } catch {
+    return { ok: false, error: "unavailable" };
+  }
+  const tokenHash = createHash("sha256").update(parsed.data, "utf8").digest("hex");
+  const { data: sale, error: saleError } = await admin
+    .from("sales")
+    .select("shop_id, shop_customer_id, method, status, qr_token_hash, expires_at, used_at")
+    .eq("qr_token_hash", tokenHash)
+    .maybeSingle();
+  if (saleError) return { ok: false, error: "unavailable" };
+  if (
+    !sale
+    || typeof sale.shop_id !== "string"
+    || sale.shop_customer_id !== null
+    || sale.method !== "pending"
+    || sale.status !== "pending"
+    || (sale.qr_token_hash !== null && typeof sale.qr_token_hash !== "string")
+    || (sale.expires_at !== null && typeof sale.expires_at !== "string")
+    || (sale.used_at !== null && typeof sale.used_at !== "string")
+    || verifySaleToken(parsed.data, sale.qr_token_hash, sale.expires_at, sale.used_at) !== "ok"
+  ) {
+    return { ok: false, error: "invalid_link" };
+  }
+
+  const { data: shopCustomer, error: customerError } = await admin
+    .from("shop_customers")
+    .select("id, status, customer_profile_id")
+    .eq("shop_id", sale.shop_id)
+    .eq("customer_phone", profile.phone)
+    .maybeSingle();
+  if (customerError) return { ok: false, error: "unavailable" };
+  if (
+    !shopCustomer
+    || typeof shopCustomer.id !== "string"
+    || shopCustomer.status !== "active"
+    || shopCustomer.customer_profile_id !== null
+  ) {
+    return { ok: false, error: "invalid_link" };
+  }
+
+  return { ok: true, sessionClient, shopCustomerId: shopCustomer.id };
+}
+
+export async function getCustomerPayConsentState(input: unknown): Promise<
+  ActionFailure | ActionSuccess<{ needsConsent: true }>
+> {
+  const context = await getPayConsentContext(input);
+  if (!context.ok) return context;
+  return { ok: true, needsConsent: true };
+}
+
+export async function linkWithConsent(input: unknown): Promise<
+  ActionFailure | ActionSuccess<{ linked: true }>
+> {
+  const parsed = linkWithConsentSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "consent_required" };
+
+  const context = await getPayConsentContext(parsed.data.token);
+  if (!context.ok) return context;
+
+  // WHY: The restricted RPC repeats identity, consent, and phone-match checks inside the database transaction.
+  const { error } = await context.sessionClient.rpc("link_shop_customer_with_consent", {
+    target_shop_customer_id: context.shopCustomerId,
+    consent_given: parsed.data.consent,
+  });
+  if (error) return { ok: false, error: "link_failed" };
+  return { ok: true, linked: true };
+}
 
 async function getOwnerContext(): Promise<OwnerContext> {
   let sessionClient;
