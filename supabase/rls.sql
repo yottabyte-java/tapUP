@@ -54,10 +54,13 @@ BEGIN
     RAISE EXCEPTION 'Sign in as the customer and provide consent to link this account';
   END IF;
 
-  SELECT p.phone
+  -- WHY: A profile phone is editable account data, so only Auth's OTP-confirmed phone can prove ownership.
+  SELECT u.phone
     INTO caller_phone
-    FROM public.profiles AS p
-    WHERE p.id = caller_id
+    FROM auth.users AS u
+    JOIN public.profiles AS p ON p.id = u.id
+    WHERE u.id = caller_id
+      AND u.phone_confirmed_at IS NOT NULL
       AND p.role = 'customer';
 
   IF NOT FOUND OR caller_phone IS NULL THEN
@@ -99,7 +102,7 @@ CREATE POLICY profiles_select_self
   ON public.profiles FOR SELECT TO authenticated
   USING (id = (SELECT auth.uid()));
 
--- WHY: Users cannot change their role or create a profile for another Auth account.
+-- WHY: Users can edit their name but cannot change the phone value used for account identification.
 CREATE POLICY profiles_update_self
   ON public.profiles FOR UPDATE TO authenticated
   USING (id = (SELECT auth.uid()))
@@ -224,7 +227,7 @@ FROM PUBLIC, anon, authenticated;
 
 GRANT SELECT (id, role, full_name, phone, created_at, updated_at)
   ON public.profiles TO authenticated;
-GRANT UPDATE (full_name, phone)
+GRANT UPDATE (full_name)
   ON public.profiles TO authenticated;
 
 GRANT SELECT (id, owner_id, name, created_at, updated_at)

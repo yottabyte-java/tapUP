@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CustomerRow } from "@/components/CustomerRow";
 import { GET as lenderGet } from "@/app/api/v1/buying-power/route";
-import { addCustomer } from "@/lib/actions/customers";
+import { addCustomer, getCustomerPayConsentState } from "@/lib/actions/customers";
 import { createSale, approveTab } from "@/lib/actions/sales";
 import { isLocked, registerFailure, type PinLockoutState } from "@/lib/pin";
 import { createSaleToken, verifySaleToken } from "@/lib/qr";
@@ -219,6 +219,23 @@ describe("security checks", () => {
     expect(salesPolicy).toContain("sc.shop_id = sales.shop_id");
     expect(salesPolicy).toContain("sc.customer_profile_id = (SELECT auth.uid())");
     // WHY: A customer relationship must match both the sale's shop and the current Auth user.
+  });
+
+  it("requires a Supabase-confirmed Auth phone for customer linking, not the editable profile phone", async () => {
+    configureClients();
+    const rls = readFileSync(resolve(process.cwd(), "supabase/rls.sql"), "utf8");
+    const linkingFunction = rls.match(/CREATE FUNCTION public\.link_shop_customer_with_consent[\s\S]*?\n\$\$;/)?.[0] ?? "";
+    const profilePhoneGrant = rls.match(/GRANT UPDATE \([^)]*\)\s+ON public\.profiles TO authenticated;/)?.[0] ?? "";
+
+    expect(linkingFunction).toContain("FROM auth.users AS u");
+    expect(linkingFunction).toContain("u.phone_confirmed_at IS NOT NULL");
+    expect(linkingFunction).not.toContain("SELECT p.phone");
+    expect(profilePhoneGrant).toContain("full_name");
+    expect(profilePhoneGrant).not.toMatch(/\bphone\b/i);
+
+    const result = await getCustomerPayConsentState("a".repeat(32));
+    expect(result).toEqual({ ok: false, error: "invalid_link" });
+    expect(createAdminClientMock).not.toHaveBeenCalled();
   });
 
   it("does not expose a foreign shop's sale through the owner action lookup", async () => {

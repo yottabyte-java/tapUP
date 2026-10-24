@@ -6,7 +6,12 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient as createSessionClient } from "@/lib/supabase/server";
 import { hashPin, isLocked, registerFailure, verifyPin } from "@/lib/pin";
 import { checkRateLimit, getClientIp, RATE_LIMITS } from "@/lib/rateLimit";
-import { addCustomerSchema, saleTokenSchema, setPinSchema } from "@/lib/validation";
+import {
+  addCustomerSchema,
+  saleTokenSchema,
+  setPinSchema,
+  southAfricanPhoneSchema,
+} from "@/lib/validation";
 import { verifySaleToken } from "@/lib/qr";
 import { z } from "zod";
 
@@ -61,17 +66,18 @@ async function getPayConsentContext(input: unknown): Promise<PayConsentContext> 
   const { data: { user }, error: authError } = await sessionClient.auth.getUser();
   if (authError || !user) return { ok: false, error: "unauthorized" };
 
-  // WHY: The profile phone must match the shop's existing record before the restricted link function can associate it.
+  // WHY: Only a phone verified by Supabase Auth may identify an existing shop customer; profile phone is user-editable data.
+  if (!user.phone || !user.phone_confirmed_at) return { ok: false, error: "invalid_link" };
+  const verifiedPhone = southAfricanPhoneSchema.safeParse(user.phone);
+  if (!verifiedPhone.success) return { ok: false, error: "invalid_link" };
+
   const { data: profile, error: profileError } = await sessionClient
     .from("profiles")
-    .select("role, phone")
+    .select("role")
     .eq("id", user.id)
     .maybeSingle();
   if (profileError) return { ok: false, error: "unavailable" };
   if (!profile || profile.role !== "customer") return { ok: false, error: "forbidden" };
-  if (typeof profile.phone !== "string" || profile.phone.length === 0) {
-    return { ok: false, error: "invalid_link" };
-  }
 
   let admin;
   try {
@@ -104,7 +110,7 @@ async function getPayConsentContext(input: unknown): Promise<PayConsentContext> 
     .from("shop_customers")
     .select("id, status, customer_profile_id")
     .eq("shop_id", sale.shop_id)
-    .eq("customer_phone", profile.phone)
+    .eq("customer_phone", verifiedPhone.data)
     .maybeSingle();
   if (customerError) return { ok: false, error: "unavailable" };
   if (
