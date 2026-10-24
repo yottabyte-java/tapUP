@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { hashPin, verifyPin } from "@/lib/pin";
 
 const PROJECT_ID = "tapup-redteam-local-20261024";
 const enabled = process.env.TAPUP_REDTEAM_LOCAL === "1";
@@ -114,9 +116,7 @@ async function createShopCustomer(input: {
       status: "active",
       consent_at: new Date().toISOString(),
       owner_confirmed_at: input.profileId ? new Date().toISOString() : null,
-      pin_hash: input.pin
-        ? "$2b$10$c7.9pRKnnHbm4p8iiLoGWO3VeFWfBKxYX8l6phC0.UTyc1QNhtLue"
-        : null,
+      pin_hash: input.pin ? await hashPin("0427") : null,
       credit_limit_cents: 10_000,
     })
     .select("id")
@@ -188,6 +188,60 @@ async function approveFixtureTab(saleId: string): Promise<{ error: { message: st
     .select("id")
     .maybeSingle();
   return { error };
+}
+
+async function approveAtomic(input: {
+  saleId: string;
+  customerId: string;
+  shopId: string;
+  ownerId: string;
+  pin?: string;
+}): Promise<{ data: unknown; error: { message: string } | null }> {
+  if (!admin) throw new Error("Local red-team admin client is unavailable");
+  const { data: customer, error: customerError } = await admin
+    .from("shop_customers")
+    .select("pin_hash")
+    .eq("id", input.customerId)
+    .eq("shop_id", input.shopId)
+    .single();
+  if (customerError) throw new Error("Could not load test PIN hash");
+  const expectedHash = typeof customer.pin_hash === "string" ? customer.pin_hash : null;
+  const pinWasVerified = Boolean(input.pin && expectedHash && await verifyPin(input.pin, expectedHash));
+  return admin.rpc("approve_tab_atomic", {
+    target_sale_id: input.saleId,
+    target_shop_customer_id: input.customerId,
+    target_shop_id: input.shopId,
+    expected_owner_id: input.ownerId,
+    verified_pin_hash: expectedHash,
+    pin_was_supplied: input.pin !== undefined,
+    pin_was_verified: pinWasVerified,
+  });
+}
+
+async function createCompletedPurchase(customerId: string, totalCents = 1_000): Promise<void> {
+  if (!fixture || !admin) throw new Error("Local red-team test fixture is unavailable");
+  const saleId = await createSale({
+    shopId: fixture.shops.a,
+    customerId,
+    totalCents,
+  });
+  await ensureNoError(await admin.from("sales").update({
+    method: "demo_card",
+    status: "paid",
+    paid_now_cents: totalCents,
+    paid_now_method: "demo_card",
+    paid_now_confirmed_at: new Date().toISOString(),
+  }).eq("id", saleId).select("id").single());
+}
+
+function setApprovalFailureTrigger(enabled: boolean, saleId?: string): void {
+  if (enabled && !saleId?.match(/^[0-9a-f-]{36}$/i)) throw new Error("A local test sale ID is required");
+  const sql = enabled
+    ? `DROP TRIGGER IF EXISTS tapup_test_fail_approval ON public.sales; DROP FUNCTION IF EXISTS public.tapup_test_fail_approval(); CREATE OR REPLACE FUNCTION public.tapup_test_fail_approval() RETURNS trigger LANGUAGE plpgsql SET search_path = '' AS $$ BEGIN IF NEW.status = 'approved' AND NEW.id = '${saleId}'::uuid THEN RAISE EXCEPTION 'injected local test failure'; END IF; RETURN NEW; END; $$; CREATE TRIGGER tapup_test_fail_approval BEFORE UPDATE ON public.sales FOR EACH ROW EXECUTE FUNCTION public.tapup_test_fail_approval();`
+    : "DROP TRIGGER IF EXISTS tapup_test_fail_approval ON public.sales; DROP FUNCTION IF EXISTS public.tapup_test_fail_approval();";
+  execFileSync("docker", [
+    "exec", "-i", `supabase_db_${PROJECT_ID}`, "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1",
+  ], { input: sql, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
 }
 
 const localSuite = describe.skipIf(!enabled);
@@ -525,6 +579,35 @@ localSuite("local Supabase red-team integration", () => {
     expect(rejectedRows.data?.every((row) => row.customer_profile_id === null)).toBe(true);
   });
 
+  it("allows a customer to grant and revoke lender sharing only on their own shop record", async () => {
+    if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
+    const grant = await fixture.sessions.customerA.rpc("set_lender_sharing_consent", {
+      target_shop_customer_id: fixture.customers.a,
+      consent_given: true,
+    });
+    expect(grant.error).toBeNull();
+    const granted = await admin.from("shop_customers")
+      .select("lender_sharing_consent_at")
+      .eq("id", fixture.customers.a).single();
+    expect(granted.data?.lender_sharing_consent_at).toBeTruthy();
+
+    const crossCustomer = await fixture.sessions.customerB.rpc("set_lender_sharing_consent", {
+      target_shop_customer_id: fixture.customers.a,
+      consent_given: true,
+    });
+    expect(crossCustomer.error).toBeTruthy();
+
+    const revoke = await fixture.sessions.customerA.rpc("set_lender_sharing_consent", {
+      target_shop_customer_id: fixture.customers.a,
+      consent_given: false,
+    });
+    expect(revoke.error).toBeNull();
+    const revoked = await admin.from("shop_customers")
+      .select("lender_sharing_consent_at")
+      .eq("id", fixture.customers.a).single();
+    expect(revoked.data?.lender_sharing_consent_at).toBeNull();
+  });
+
   it("rejects sale-total tampering and allows at most one concurrent QR state transition", async () => {
     if (!admin || !fixture) throw new Error("Test fixtures were not initialized");
     const before = await admin
@@ -605,8 +688,180 @@ localSuite("local Supabase red-team integration", () => {
     expect(finalSale.data?.used_at).toBeTruthy();
   });
 
-  it("serializes concurrent tab approvals so approved exposure never exceeds the limit", async () => {
+  it("atomically approves a valid PIN and rejects duplicate approval requests", async () => {
     if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
+    await createCompletedPurchase(fixture.customers.pin);
+    await createCompletedPurchase(fixture.customers.pin);
+    const saleId = await createSale({
+      shopId: fixture.shops.a,
+      customerId: fixture.customers.pin,
+      totalCents: 1_000,
+    });
+
+    const approval = await approveAtomic({
+      saleId,
+      customerId: fixture.customers.pin,
+      shopId: fixture.shops.a,
+      ownerId: fixture.users.ownerA.id,
+      pin: "0427",
+    });
+    expect(approval.error).toBeNull();
+    expect(approval.data).toMatchObject({ ok: true, saleId, limitCents: 10_000 });
+    const duplicate = await approveAtomic({
+      saleId,
+      customerId: fixture.customers.pin,
+      shopId: fixture.shops.a,
+      ownerId: fixture.users.ownerA.id,
+      pin: "0427",
+    });
+    expect(duplicate.error).toBeNull();
+    expect(duplicate.data).toMatchObject({ ok: false, error: "sale_not_approvable" });
+    const finalState = await admin.from("sales").select("status").eq("id", saleId).single();
+    expect(finalState.data?.status).toBe("approved");
+  });
+
+  it("persists wrong PIN failures and lockout without changing the sale or cached limit", async () => {
+    if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
+    const customerId = await createShopCustomer({
+      shopId: fixture.shops.a,
+      phone: `+2782${Date.now().toString().slice(-7)}`,
+      pin: true,
+    });
+    const saleId = await createSale({ shopId: fixture.shops.a, customerId, totalCents: 1_000 });
+    const failures = [];
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      failures.push(await approveAtomic({
+        saleId,
+        customerId,
+        shopId: fixture.shops.a,
+        ownerId: fixture.users.ownerA.id,
+        pin: "9999",
+      }));
+    }
+    expect(failures.slice(0, 4).map((result) => (result.data as { error?: string })?.error))
+      .toEqual(["invalid_pin", "invalid_pin", "invalid_pin", "invalid_pin"]);
+    expect(failures[4].data).toMatchObject({ ok: false, error: "pin_locked" });
+    const persisted = await admin.from("shop_customers")
+      .select("failed_pin_attempts, locked_until, credit_limit_cents")
+      .eq("id", customerId).single();
+    const sale = await admin.from("sales").select("status").eq("id", saleId).single();
+    expect(persisted.data).toMatchObject({ failed_pin_attempts: 5, credit_limit_cents: 10_000 });
+    expect(persisted.data?.locked_until).toBeTruthy();
+    expect(sale.data?.status).toBe("pending");
+  });
+
+  it("rolls back the cache update, PIN reset, and both sale transitions after an injected database failure", async () => {
+    if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
+    const customerId = await createShopCustomer({
+      shopId: fixture.shops.a,
+      phone: `+2780${Date.now().toString().slice(-7)}`,
+      pin: true,
+    });
+    await createCompletedPurchase(customerId);
+    await createCompletedPurchase(customerId);
+    await ensureNoError(await admin.from("shop_customers").update({
+      credit_limit_cents: 5_000,
+      failed_pin_attempts: 2,
+    }).eq("id", customerId));
+    const saleId = await createSale({ shopId: fixture.shops.a, customerId, totalCents: 1_000 });
+
+    setApprovalFailureTrigger(true, saleId);
+    try {
+      const failed = await approveAtomic({
+        saleId,
+        customerId,
+        shopId: fixture.shops.a,
+        ownerId: fixture.users.ownerA.id,
+        pin: "0427",
+      });
+      expect(failed.error).toBeTruthy();
+      const customer = await admin.from("shop_customers")
+        .select("credit_limit_cents, failed_pin_attempts")
+        .eq("id", customerId).single();
+      const sale = await admin.from("sales").select("status, shop_customer_id")
+        .eq("id", saleId).single();
+      expect(customer.data).toMatchObject({ credit_limit_cents: 5_000, failed_pin_attempts: 2 });
+      expect(sale.data).toMatchObject({ status: "pending", shop_customer_id: customerId });
+    } finally {
+      setApprovalFailureTrigger(false);
+    }
+  });
+
+  it("rechecks expiry, consent, customer ownership, state, and owner authorization in the RPC", async () => {
+    if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
+    const expiredAt = new Date(Date.now() - 10 * 60_000);
+    const expiredSale = await createSale({
+      shopId: fixture.shops.a,
+      customerId: fixture.customers.pin,
+      totalCents: 1_000,
+      qrTokenHash: randomBytes(32).toString("hex"),
+      createdAt: expiredAt,
+      expiresAt: new Date(expiredAt.getTime() + 4 * 60_000),
+    });
+    const expired = await approveAtomic({
+      saleId: expiredSale,
+      customerId: fixture.customers.pin,
+      shopId: fixture.shops.a,
+      ownerId: fixture.users.ownerA.id,
+      pin: "0427",
+    });
+    expect(expired.data).toMatchObject({ ok: false, error: "sale_expired" });
+
+    const unauthorizedSale = await createSale({
+      shopId: fixture.shops.a,
+      customerId: fixture.customers.pin,
+      totalCents: 1_000,
+    });
+    const unauthorized = await approveAtomic({
+      saleId: unauthorizedSale,
+      customerId: fixture.customers.pin,
+      shopId: fixture.shops.a,
+      ownerId: fixture.users.ownerB.id,
+      pin: "0427",
+    });
+    expect(unauthorized.data).toMatchObject({ ok: false, error: "forbidden" });
+    const directAuthenticatedCall = await fixture.sessions.ownerA.rpc("approve_tab_atomic", {
+      target_sale_id: unauthorizedSale,
+      target_shop_customer_id: fixture.customers.pin,
+      target_shop_id: fixture.shops.a,
+      expected_owner_id: fixture.users.ownerA.id,
+      verified_pin_hash: null,
+      pin_was_supplied: false,
+      pin_was_verified: false,
+    });
+    expect(directAuthenticatedCall.error).toBeTruthy();
+
+    const consentCustomer = await createShopCustomer({
+      shopId: fixture.shops.a,
+      phone: `+2781${(Date.now() + 1).toString().slice(-7)}`,
+      pin: true,
+    });
+    const consentSale = await createSale({ shopId: fixture.shops.a, customerId: consentCustomer, totalCents: 1_000 });
+    await ensureNoError(await admin.from("shop_customers").update({ consent_at: null }).eq("id", consentCustomer));
+    const missingConsent = await approveAtomic({
+      saleId: consentSale,
+      customerId: consentCustomer,
+      shopId: fixture.shops.a,
+      ownerId: fixture.users.ownerA.id,
+      pin: "0427",
+    });
+    expect(missingConsent.data).toMatchObject({ ok: false, error: "customer_consent_required" });
+
+    const requestedSale = await createSale({ shopId: fixture.shops.a, customerId: fixture.customers.pin, totalCents: 1_000 });
+    await makeTabRequested(requestedSale, fixture.customers.pin, 1_000);
+    const wrongCustomer = await approveAtomic({
+      saleId: requestedSale,
+      customerId: fixture.customers.a,
+      shopId: fixture.shops.a,
+      ownerId: fixture.users.ownerA.id,
+    });
+    expect(wrongCustomer.data).toMatchObject({ ok: false, error: "sale_customer_mismatch" });
+  });
+
+  it("serializes concurrent tab approvals so approved exposure never exceeds the calculated limit", async () => {
+    if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
+    await createCompletedPurchase(fixture.customers.pin);
+    await createCompletedPurchase(fixture.customers.pin);
     const saleA = await createSale({
       shopId: fixture.shops.a,
       customerId: fixture.customers.pin,
@@ -623,10 +878,10 @@ localSuite("local Supabase red-team integration", () => {
     ]);
 
     const approvals = await Promise.all([
-      approveFixtureTab(saleA),
-      approveFixtureTab(saleB),
+      approveAtomic({ saleId: saleA, customerId: fixture.customers.pin, shopId: fixture.shops.a, ownerId: fixture.users.ownerA.id, pin: "0427" }),
+      approveAtomic({ saleId: saleB, customerId: fixture.customers.pin, shopId: fixture.shops.a, ownerId: fixture.users.ownerA.id, pin: "0427" }),
     ]);
-    expect(approvals.filter((result) => result.error === null)).toHaveLength(1);
+    expect(approvals.filter((result) => !result.error && (result.data as { ok?: boolean })?.ok)).toHaveLength(1);
 
     const exposure = await admin
       .from("sales")

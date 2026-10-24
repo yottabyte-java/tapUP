@@ -44,6 +44,76 @@ const linkWithConsentSchema = z.object({
   token: saleTokenSchema,
   consent: z.literal(true),
 }).strict();
+const phoneVerificationSchema = z.object({
+  token: saleTokenSchema,
+  phone: southAfricanPhoneSchema,
+}).strict();
+const phoneOtpSchema = z.object({
+  saleToken: saleTokenSchema,
+  phone: southAfricanPhoneSchema,
+  token: z.string().trim().regex(/^\d{4,10}$/),
+}).strict();
+const ownerIdentityConfirmationSchema = z.object({
+  shopCustomerId: z.string().uuid(),
+}).strict();
+
+type CustomerSaleContext =
+  | {
+    ok: true;
+    sessionClient: Awaited<ReturnType<typeof createSessionClient>>;
+    admin: ReturnType<typeof createAdminClient>;
+    shopId: string;
+    userId: string;
+    phone: string | null;
+    phoneConfirmed: boolean;
+  }
+  | ActionFailure;
+
+async function getCustomerSaleContext(input: unknown): Promise<CustomerSaleContext> {
+  const parsed = saleTokenSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "invalid_link" };
+  let sessionClient;
+  try {
+    sessionClient = await createSessionClient();
+  } catch {
+    return { ok: false, error: "unavailable" };
+  }
+  const { data: { user }, error: authError } = await sessionClient.auth.getUser();
+  if (authError || !user) return { ok: false, error: "unauthorized" };
+  const { data: profile, error: profileError } = await sessionClient
+    .from("profiles").select("role").eq("id", user.id).maybeSingle();
+  if (profileError) return { ok: false, error: "unavailable" };
+  if (!profile || profile.role !== "customer") return { ok: false, error: "forbidden" };
+  let admin;
+  try {
+    admin = createAdminClient();
+  } catch {
+    return { ok: false, error: "unavailable" };
+  }
+  const tokenHash = createHash("sha256").update(parsed.data, "utf8").digest("hex");
+  const { data: sale, error: saleError } = await admin.from("sales")
+    .select("shop_id, shop_customer_id, method, status, qr_token_hash, expires_at, used_at")
+    .eq("qr_token_hash", tokenHash).maybeSingle();
+  if (saleError) return { ok: false, error: "unavailable" };
+  if (
+    !sale || typeof sale.shop_id !== "string" || sale.shop_customer_id !== null
+    || sale.method !== "pending" || sale.status !== "pending"
+    || (sale.qr_token_hash !== null && typeof sale.qr_token_hash !== "string")
+    || (sale.expires_at !== null && typeof sale.expires_at !== "string")
+    || (sale.used_at !== null && typeof sale.used_at !== "string")
+    || verifySaleToken(parsed.data, sale.qr_token_hash, sale.expires_at, sale.used_at) !== "ok"
+  ) return { ok: false, error: "invalid_link" };
+
+  return {
+    ok: true,
+    sessionClient,
+    admin,
+    shopId: sale.shop_id,
+    userId: user.id,
+    phone: user.phone ?? null,
+    phoneConfirmed: Boolean(user.phone_confirmed_at),
+  };
+}
 
 type PayConsentContext =
   | {
@@ -54,75 +124,60 @@ type PayConsentContext =
   | ActionFailure;
 
 async function getPayConsentContext(input: unknown): Promise<PayConsentContext> {
-  const parsed = saleTokenSchema.safeParse(input);
-  if (!parsed.success) return { ok: false, error: "invalid_link" };
+  const context = await getCustomerSaleContext(input);
+  if (!context.ok) return context;
+  if (!context.phone || !context.phoneConfirmed) return { ok: false, error: "phone_required" };
+  const verifiedPhone = southAfricanPhoneSchema.safeParse(context.phone);
+  if (!verifiedPhone.success) return { ok: false, error: "phone_required" };
 
-  let sessionClient;
-  try {
-    sessionClient = await createSessionClient();
-  } catch {
-    return { ok: false, error: "unavailable" };
-  }
-  const { data: { user }, error: authError } = await sessionClient.auth.getUser();
-  if (authError || !user) return { ok: false, error: "unauthorized" };
-
-  // WHY: Only a phone verified by Supabase Auth may identify an existing shop customer; profile phone is user-editable data.
-  if (!user.phone || !user.phone_confirmed_at) return { ok: false, error: "invalid_link" };
-  const verifiedPhone = southAfricanPhoneSchema.safeParse(user.phone);
-  if (!verifiedPhone.success) return { ok: false, error: "invalid_link" };
-
-  const { data: profile, error: profileError } = await sessionClient
-    .from("profiles")
-    .select("role")
-    .eq("id", user.id)
-    .maybeSingle();
-  if (profileError) return { ok: false, error: "unavailable" };
-  if (!profile || profile.role !== "customer") return { ok: false, error: "forbidden" };
-
-  let admin;
-  try {
-    admin = createAdminClient();
-  } catch {
-    return { ok: false, error: "unavailable" };
-  }
-  const tokenHash = createHash("sha256").update(parsed.data, "utf8").digest("hex");
-  const { data: sale, error: saleError } = await admin
-    .from("sales")
-    .select("shop_id, shop_customer_id, method, status, qr_token_hash, expires_at, used_at")
-    .eq("qr_token_hash", tokenHash)
-    .maybeSingle();
-  if (saleError) return { ok: false, error: "unavailable" };
-  if (
-    !sale
-    || typeof sale.shop_id !== "string"
-    || sale.shop_customer_id !== null
-    || sale.method !== "pending"
-    || sale.status !== "pending"
-    || (sale.qr_token_hash !== null && typeof sale.qr_token_hash !== "string")
-    || (sale.expires_at !== null && typeof sale.expires_at !== "string")
-    || (sale.used_at !== null && typeof sale.used_at !== "string")
-    || verifySaleToken(parsed.data, sale.qr_token_hash, sale.expires_at, sale.used_at) !== "ok"
-  ) {
-    return { ok: false, error: "invalid_link" };
-  }
-
-  const { data: shopCustomer, error: customerError } = await admin
+  // WHY: Only Auth's OTP-confirmed phone identifies a shop record; profile phone is user-editable data.
+  const { data: shopCustomer, error: customerError } = await context.admin
     .from("shop_customers")
     .select("id, status, customer_profile_id")
-    .eq("shop_id", sale.shop_id)
+    .eq("shop_id", context.shopId)
     .eq("customer_phone", verifiedPhone.data)
     .maybeSingle();
   if (customerError) return { ok: false, error: "unavailable" };
   if (
     !shopCustomer
-    || typeof shopCustomer.id !== "string"
-    || shopCustomer.status !== "active"
-    || shopCustomer.customer_profile_id !== null
-  ) {
+  ) return { ok: false, error: "phone_required" };
+  if (typeof shopCustomer.id !== "string" || shopCustomer.status !== "active" || shopCustomer.customer_profile_id !== null) {
     return { ok: false, error: "invalid_link" };
   }
 
-  return { ok: true, sessionClient, shopCustomerId: shopCustomer.id };
+  return { ok: true, sessionClient: context.sessionClient, shopCustomerId: shopCustomer.id };
+}
+
+export async function requestCustomerPhoneVerification(input: unknown): Promise<ActionFailure | ActionSuccess<{ sent: true }>> {
+  const parsed = phoneVerificationSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "invalid_input" };
+  const context = await getCustomerSaleContext(parsed.data.token);
+  if (!context.ok) return context;
+
+  const rateLimit = checkRateLimit(getClientIp(await headers()), "customer:phone-otp", RATE_LIMITS.pin);
+  if (!rateLimit.allowed) return { ok: false, error: "phone_rate_limited" };
+  const { error } = await context.sessionClient.auth.updateUser({ phone: parsed.data.phone });
+  if (error) return { ok: false, error: "phone_verification_unavailable" };
+  return { ok: true, sent: true };
+}
+
+export async function verifyCustomerPhone(input: unknown): Promise<ActionFailure | ActionSuccess<{ verified: true }>> {
+  const parsed = phoneOtpSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "invalid_input" };
+  const context = await getCustomerSaleContext(parsed.data.saleToken);
+  if (!context.ok) return context;
+
+  const rateLimit = checkRateLimit(getClientIp(await headers()), "customer:phone-otp-verify", RATE_LIMITS.pin);
+  if (!rateLimit.allowed) return { ok: false, error: "phone_rate_limited" };
+  const { data, error } = await context.sessionClient.auth.verifyOtp({
+    phone: parsed.data.phone,
+    token: parsed.data.token,
+    type: "phone_change",
+  });
+  if (error || !data.user?.phone_confirmed_at) return { ok: false, error: "phone_verification_failed" };
+  const linkedIdentity = await getPayConsentContext(parsed.data.saleToken);
+  if (!linkedIdentity.ok) return { ok: false, error: "phone_mismatch" };
+  return { ok: true, verified: true };
 }
 
 export async function getCustomerPayConsentState(input: unknown): Promise<
@@ -353,6 +408,32 @@ export async function setCustomerPin(input: unknown): Promise<
   if (error) return { ok: false, error: "pin_setup_failed" };
   if (!data) return { ok: false, error: "customer_not_found_or_pin_already_set" };
   return { ok: true, shopCustomerId: data.id };
+}
+
+export async function confirmCustomerIdentity(input: unknown): Promise<
+  ActionFailure | ActionSuccess<{ confirmed: true }>
+> {
+  const parsed = ownerIdentityConfirmationSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "invalid_input" };
+
+  const owner = await getOwnerContext();
+  if (!owner.ok) return owner;
+
+  // WHY: Owner attestation is a separate, explicit act after in-person identity verification.
+  const { data, error } = await owner.admin
+    .from("shop_customers")
+    .update({ owner_confirmed_at: new Date().toISOString() })
+    .eq("id", parsed.data.shopCustomerId)
+    .eq("shop_id", owner.shopId)
+    .eq("status", "active")
+    .not("consent_at", "is", null)
+    .or("customer_profile_id.not.is.null,pin_hash.not.is.null")
+    .is("owner_confirmed_at", null)
+    .select("id")
+    .maybeSingle();
+  if (error) return { ok: false, error: "identity_confirmation_failed" };
+  if (!data) return { ok: false, error: "customer_not_available" };
+  return { ok: true, confirmed: true };
 }
 
 export async function verifyCustomerPin(input: unknown): Promise<

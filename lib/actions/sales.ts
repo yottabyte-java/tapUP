@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { headers } from "next/headers";
 import { calculateBuyingPower, type BuyingPowerHistory, type BuyingPowerSale } from "@/lib/buyingPower";
 import { products } from "@/lib/products";
-import { isLocked, registerFailure, verifyPin } from "@/lib/pin";
+import { verifyPin } from "@/lib/pin";
 import { createSaleToken, verifySaleToken } from "@/lib/qr";
 import { checkRateLimit, getClientIp, RATE_LIMITS } from "@/lib/rateLimit";
 import {
@@ -372,66 +372,6 @@ function outstandingBalanceCents(history: BuyingPowerHistory): number {
   }, 0);
 }
 
-async function recordFailedPin(
-  admin: ReturnType<typeof createAdminClient>,
-  customerId: string,
-  shopId: string,
-): Promise<"locked" | "recorded" | "unavailable"> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    let customer: CustomerSecurityRecord | null;
-    try {
-      customer = await getCustomer(admin, customerId, shopId);
-    } catch {
-      return "unavailable";
-    }
-    if (!customer) return "unavailable";
-
-    const state = {
-      failedAttempts: customer.failedPinAttempts,
-      lockedUntil: customer.lockedUntil,
-    };
-    const now = new Date();
-    if (isLocked(state, now)) return "locked";
-    const nextState = registerFailure(state, now);
-
-    let update = admin
-      .from("shop_customers")
-      .update({
-        failed_pin_attempts: nextState.failedAttempts,
-        locked_until: nextState.lockedUntil,
-      })
-      .eq("id", customerId)
-      .eq("shop_id", shopId)
-      .eq("failed_pin_attempts", customer.failedPinAttempts);
-    update = customer.lockedUntil === null
-      ? update.is("locked_until", null)
-      : update.eq("locked_until", customer.lockedUntil);
-
-    const { data, error } = await update.select("id").maybeSingle();
-    if (error) return "unavailable";
-    if (data) return nextState.lockedUntil === null ? "recorded" : "locked";
-  }
-  return "unavailable";
-}
-
-async function resetPinFailures(
-  admin: ReturnType<typeof createAdminClient>,
-  customer: CustomerSecurityRecord,
-  shopId: string,
-): Promise<boolean> {
-  let update = admin
-    .from("shop_customers")
-    .update({ failed_pin_attempts: 0, locked_until: null })
-    .eq("id", customer.id)
-    .eq("shop_id", shopId)
-    .eq("failed_pin_attempts", customer.failedPinAttempts);
-  update = customer.lockedUntil === null
-    ? update.is("locked_until", null)
-    : update.eq("locked_until", customer.lockedUntil);
-  const { data, error } = await update.select("id").maybeSingle();
-  return !error && data !== null;
-}
-
 export async function createSale(input: unknown): Promise<
   ActionFailure | ActionSuccess<{ saleId: string; token: string; expiresAt: string; totalCents: number }>
 > {
@@ -723,140 +663,69 @@ export async function approveTab(input: unknown): Promise<
   if (!owner.ok) return owner;
 
   const { saleId, shopCustomerId, pin } = parsed.data;
-  let sale: SaleRecord | null;
   let customer: CustomerSecurityRecord | null;
   try {
-    [sale, customer] = await Promise.all([
-      getSale(owner.admin, saleId, owner.shopId),
-      getCustomer(owner.admin, shopCustomerId, owner.shopId),
-    ]);
+    customer = await getCustomer(owner.admin, shopCustomerId, owner.shopId);
   } catch {
     return { ok: false, error: "unavailable" };
   }
-  if (!sale || !customer) return { ok: false, error: "sale_or_customer_not_found" };
-  if (customer.status !== "active" || customer.consentAt === null) {
-    return { ok: false, error: "customer_consent_required" };
-  }
-  // WHY: Only a current pending/requested sale may transition, which blocks replay and arbitrary sale mutation.
-  if (sale.status !== "pending" && sale.status !== "tab_requested") {
-    return { ok: false, error: "sale_not_approvable" };
-  }
-  if (sale.status === "tab_requested" && sale.shopCustomerId !== customer.id) {
-    return { ok: false, error: "sale_customer_mismatch" };
-  }
-  if (sale.status === "pending" && sale.usedAt !== null) {
-    return { ok: false, error: "sale_already_used" };
-  }
-  if (sale.expiresAt !== null && Date.parse(sale.expiresAt) <= Date.now()) {
-    return { ok: false, error: "sale_expired" };
+  if (!customer) return { ok: false, error: "sale_or_customer_not_found" };
+  if (customer.customerProfileId !== null && pin !== undefined) {
+    return { ok: false, error: "unexpected_pin" };
   }
 
-  if (customer.customerProfileId === null) {
-    if (!pin || !customer.pinHash) return { ok: false, error: "pin_required" };
-    if (isLocked({
-      failedAttempts: customer.failedPinAttempts,
-      lockedUntil: customer.lockedUntil,
-    })) {
-      return { ok: false, error: "pin_locked" };
-    }
+  if (pin !== undefined) {
     const rateLimit = checkRateLimit(
       getClientIp(await headers()),
       "pin:approve-tab",
       RATE_LIMITS.pin,
     );
     if (!rateLimit.allowed) return { ok: false, error: "pin_rate_limited" };
-    const validPin = await verifyPin(pin, customer.pinHash);
-    if (!validPin) {
-      const failureResult = await recordFailedPin(owner.admin, customer.id, owner.shopId);
-      if (failureResult === "unavailable") {
-        return { ok: false, error: "pin_state_unavailable" };
-      }
-      return {
-        ok: false,
-        error: failureResult === "locked" ? "pin_locked" : "invalid_pin",
-      };
-    }
-    if (!await resetPinFailures(owner.admin, customer, owner.shopId)) {
+  }
+
+  let pinVerified = false;
+  if (pin !== undefined && customer.customerProfileId === null && customer.pinHash !== null) {
+    try {
+      pinVerified = await verifyPin(pin, customer.pinHash);
+    } catch {
       return { ok: false, error: "pin_state_unavailable" };
     }
-  } else {
-    if (customer.ownerConfirmedAt === null) {
-      return { ok: false, error: "customer_not_owner_confirmed" };
-    }
-    if (pin !== undefined) return { ok: false, error: "unexpected_pin" };
   }
 
-  let history: BuyingPowerHistory;
-  let calculatedLimit: number;
-  let outstandingCents: number;
+  let approval: unknown;
   try {
-    history = await loadCustomerHistory(owner.admin, owner.shopId, customer.id);
-    calculatedLimit = calculateBuyingPower(history, new Date()).limitCents;
-    outstandingCents = outstandingBalanceCents(history);
+    const { data, error } = await owner.admin.rpc("approve_tab_atomic", {
+      target_sale_id: saleId,
+      target_shop_customer_id: shopCustomerId,
+      target_shop_id: owner.shopId,
+      expected_owner_id: owner.userId,
+      verified_pin_hash: customer.customerProfileId === null ? customer.pinHash : null,
+      pin_was_supplied: pin !== undefined,
+      pin_was_verified: pinVerified,
+    });
+    if (error) return { ok: false, error: "tab_approval_failed" };
+    approval = data;
   } catch {
-    return { ok: false, error: "buying_power_unavailable" };
-  }
-
-  const tabCents = sale.status === "tab_requested" ? sale.tabCents : sale.totalCents;
-  if (
-    !Number.isSafeInteger(tabCents)
-    || tabCents <= 0
-    || tabCents > calculatedLimit - outstandingCents
-  ) {
-    return { ok: false, error: "insufficient_buying_power" };
-  }
-  if (sale.status === "tab_requested" && sale.paidNowCents > 0 && sale.paidNowConfirmedAt === null) {
-    return { ok: false, error: "immediate_payment_unconfirmed" };
-  }
-
-  const { error: limitError } = await owner.admin
-    .from("shop_customers")
-    .update({ credit_limit_cents: calculatedLimit })
-    .eq("id", customer.id)
-    .eq("shop_id", owner.shopId);
-  if (limitError) return { ok: false, error: "buying_power_unavailable" };
-
-  if (sale.status === "pending") {
-    // WHY: The conditional transition prevents stale or concurrent owner requests from consuming a sale twice.
-    const { data: requestData, error: requestError } = await owner.admin
-      .from("sales")
-      .update({
-        shop_customer_id: customer.id,
-        method: "tab",
-        paid_now_cents: 0,
-        tab_cents: sale.totalCents,
-        paid_now_method: null,
-        status: "tab_requested",
-      })
-      .eq("id", sale.id)
-      .eq("shop_id", owner.shopId)
-      .eq("status", "pending")
-      .is("used_at", null)
-      .select("id")
-      .maybeSingle();
-    if (requestError || !requestData) return { ok: false, error: "sale_not_approvable" };
-  }
-
-  const now = new Date();
-  const dueAt = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000).toISOString();
-  const { data: approvedSale, error: approvalError } = await owner.admin
-    .from("sales")
-    .update({
-      status: "approved",
-      approved_at: now.toISOString(),
-      due_at: dueAt,
-    })
-    .eq("id", sale.id)
-    .eq("shop_id", owner.shopId)
-    .eq("shop_customer_id", customer.id)
-    .eq("status", "tab_requested")
-    .select("id")
-    .maybeSingle();
-  if (approvalError || !approvedSale) {
     return { ok: false, error: "tab_approval_failed" };
   }
 
-  return { ok: true, saleId: sale.id, dueAt, limitCents: calculatedLimit };
+  if (!isRecord(approval) || typeof approval.ok !== "boolean") {
+    return { ok: false, error: "tab_approval_failed" };
+  }
+  if (approval.ok === false) {
+    return { ok: false, error: typeof approval.error === "string" ? approval.error : "tab_approval_failed" };
+  }
+  if (
+    typeof approval.saleId !== "string"
+    || typeof approval.dueAt !== "string"
+    || !isSafeInteger(approval.limitCents)
+  ) return { ok: false, error: "tab_approval_failed" };
+  return {
+    ok: true,
+    saleId: approval.saleId,
+    dueAt: approval.dueAt,
+    limitCents: approval.limitCents,
+  };
 }
 
 export async function payCash(input: unknown): Promise<

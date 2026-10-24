@@ -1,7 +1,12 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getCustomerPayConsentState, linkWithConsent } from "@/lib/actions/customers";
+import {
+  getCustomerPayConsentState,
+  linkWithConsent,
+  requestCustomerPhoneVerification,
+  verifyCustomerPhone,
+} from "@/lib/actions/customers";
 import {
   demoPay,
   getCustomerPayDetails,
@@ -12,7 +17,7 @@ import { formatRand } from "@/lib/money";
 
 type PageProps = {
   params: Promise<{ token: string }>;
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; phone?: string }>;
 };
 
 type PayDetails = {
@@ -108,6 +113,58 @@ function ConsentRequired({ token, showError }: { token: string; showError: boole
   );
 }
 
+function VerifyCustomerPhone({ token, sent, error }: { token: string; sent: boolean; error?: string }) {
+  async function requestCode(formData: FormData) {
+    "use server";
+    const result = await requestCustomerPhoneVerification({ token, phone: formData.get("phone") });
+    if (!result.ok) redirect(`/pay/${token}?phone=error`);
+    redirect(`/pay/${token}?phone=sent`);
+  }
+
+  async function confirmCode(formData: FormData) {
+    "use server";
+    const result = await verifyCustomerPhone({
+      saleToken: token,
+      phone: formData.get("phone"),
+      token: formData.get("code"),
+    });
+    if (!result.ok) {
+      if (result.error === "unauthorized") redirect("/login");
+      redirect(`/pay/${token}?phone=mismatch`);
+    }
+    redirect(`/pay/${token}`);
+  }
+
+  return (
+    <main className="flex min-h-full flex-col px-3 py-3">
+      <section className="flex flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-5 py-6">
+        <h1 className="text-lg font-semibold">Verify your phone</h1>
+        <p className="mt-2 text-sm leading-relaxed text-foreground/75">
+          Confirm the phone number the shop has on file. We&apos;ll send an SMS code before linking your account.
+        </p>
+        {error === "mismatch" && <p className="mt-3 text-sm text-red-200" role="alert">That verified number is not linked to this shop record.</p>}
+        {error === "error" && <p className="mt-3 text-sm text-red-200" role="alert">We couldn&apos;t send or verify the SMS code. Check the number and try again.</p>}
+        {!sent ? (
+          <form action={requestCode} className="mt-5 flex flex-col">
+            <label className="text-xs font-medium" htmlFor="verify-phone">Phone number</label>
+            <input autoComplete="tel" className="mt-2 min-h-12 rounded-xl border border-teal/50 bg-card px-3 text-sm" id="verify-phone" inputMode="tel" name="phone" placeholder="082 555 0199" required />
+            <button className="mt-5 min-h-12 rounded-full bg-teal px-5 text-sm font-semibold text-[#041A1E]" type="submit">Send verification code</button>
+          </form>
+        ) : (
+          <form action={confirmCode} className="mt-5 flex flex-col">
+            <label className="text-xs font-medium" htmlFor="verify-phone-again">Phone number</label>
+            <input autoComplete="tel" className="mt-2 min-h-12 rounded-xl border border-teal/50 bg-card px-3 text-sm" id="verify-phone-again" inputMode="tel" name="phone" placeholder="082 555 0199" required />
+            <label className="mt-4 text-xs font-medium" htmlFor="verify-code">SMS code</label>
+            <input autoComplete="one-time-code" className="mt-2 min-h-12 rounded-xl border border-teal/50 bg-card px-3 text-sm" id="verify-code" inputMode="numeric" name="code" required />
+            <button className="mt-5 min-h-12 rounded-full bg-teal px-5 text-sm font-semibold text-[#041A1E]" type="submit">Verify phone</button>
+          </form>
+        )}
+        <p className="mt-5 text-xs text-foreground/60">SMS verification must be enabled for this Supabase project.</p>
+      </section>
+    </main>
+  );
+}
+
 function LoadingPayment() {
   return (
     <main className="flex min-h-full items-center justify-center px-6">
@@ -144,6 +201,9 @@ async function CustomerPayContent({ params, searchParams }: PageProps) {
       const consentState = await getCustomerPayConsentState(token);
       if (!consentState.ok) {
         if (consentState.error === "unauthorized") redirect("/login");
+        if (consentState.error === "phone_required") {
+          return <VerifyCustomerPhone error={query.phone} sent={query.phone === "sent"} token={token} />;
+        }
         if (consentState.error !== "invalid_link" && consentState.error !== "forbidden") {
           return <PaymentError token={token} />;
         }

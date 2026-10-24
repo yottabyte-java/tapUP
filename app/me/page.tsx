@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { connection } from "next/server";
 import { Suspense } from "react";
 import { z } from "zod";
@@ -8,6 +9,7 @@ import { WhyLimit } from "@/components/WhyLimit";
 import { calculateBuyingPower, explainLimit, type BuyingPowerHistory } from "@/lib/buyingPower";
 import { likelyToNeedTab } from "@/lib/forecast";
 import { createClient } from "@/lib/supabase/server";
+import { setLenderSharingConsent } from "@/lib/actions/lenderConsent";
 
 const profileSchema = z.object({
   role: z.enum(["shop_owner", "customer"]),
@@ -19,6 +21,7 @@ const databaseUuidSchema = z.string().regex(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-
 const customerLinksSchema = z.array(z.object({
   id: databaseUuidSchema,
   shop_id: databaseUuidSchema,
+  lender_sharing_consent_at: z.string().nullable(),
 }));
 
 const shopsSchema = z.array(z.object({
@@ -69,6 +72,7 @@ function logFailure(step: string, error: unknown, fallbackMessage = "Response fa
 type BuyingPowerCardData = {
   id: string;
   shopName: string;
+  lenderSharingConsent: boolean;
   limitCents: number;
   level: number;
   nextLimitCents: number;
@@ -153,6 +157,13 @@ function NoShopLinked() {
 }
 
 function ShopBuyingPower({ card }: { card: BuyingPowerCardData }) {
+  async function updateLenderConsent(formData: FormData) {
+    "use server";
+    const consent = formData.get("consent") === "true";
+    await setLenderSharingConsent({ shopCustomerId: card.id, consent });
+    revalidatePath("/me");
+  }
+
   return (
     <section aria-labelledby={`buying-power-${card.id}`} className="rounded-2xl border border-white/10 bg-card p-4">
       <h2 className="mb-3 text-sm font-semibold text-foreground/80" id={`buying-power-${card.id}`}>
@@ -164,6 +175,21 @@ function ShopBuyingPower({ card }: { card: BuyingPowerCardData }) {
         nextLimitCents={card.nextLimitCents}
       />
       <WhyLimit reasons={card.reasons} />
+      <div className="mt-5 border-t border-white/10 pt-4">
+        <p className="text-xs leading-relaxed text-foreground/70">
+          Allow the demo lender API to receive this shop&apos;s buying-power amount and explanation.
+          This does not share your name, phone number, or transaction history.
+        </p>
+        <form action={updateLenderConsent} className="mt-3">
+          <input name="consent" type="hidden" value={card.lenderSharingConsent ? "false" : "true"} />
+          <button className="min-h-10 rounded-full border border-teal/50 px-4 text-xs font-semibold" type="submit">
+            {card.lenderSharingConsent ? "Revoke lender sharing" : "Allow lender sharing"}
+          </button>
+          <span className="ml-3 text-xs text-foreground/60" role="status">
+            {card.lenderSharingConsent ? "Sharing allowed" : "Sharing off"}
+          </span>
+        </form>
+      </div>
       {card.forecast.likely && (
         <aside className="mt-5 flex items-start gap-3 rounded-xl border border-teal/50 bg-[#142329] p-3.5">
           <span aria-hidden="true" className="mt-0.5 text-lg text-amber">▣</span>
@@ -214,7 +240,7 @@ async function BuyingPowerContent() {
   // WHY: RLS limits these links to the signed-in customer, preserving a separate limit for each shop.
   const { data: linkData, error: linksError } = await supabase
     .from("shop_customers")
-    .select("id, shop_id")
+    .select("id, shop_id, lender_sharing_consent_at")
     .eq("customer_profile_id", user.id)
     .eq("status", "active");
   if (linksError) {
@@ -350,6 +376,7 @@ async function BuyingPowerContent() {
     cards.push({
       id: link.id,
       shopName,
+      lenderSharingConsent: link.lender_sharing_consent_at !== null,
       limitCents: buyingPower.limitCents,
       level: buyingPower.level,
       nextLimitCents: buyingPower.nextLimitCents,

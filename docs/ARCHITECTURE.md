@@ -137,7 +137,7 @@ conditional/atomic so a stale or replayed request cannot approve or settle a sal
 
 | Method and route | Who may call it | Response and restrictions |
 |---|---|---|
-| `GET /api/v1/buying-power?shop=<uuid>&customer=<uuid>` | A lender/demo client with the `x-api-key` matching server-only `LENDER_API_KEY` | `401` for an invalid key, `400` for invalid IDs, `429` when rate limited. Success returns only `{ limitCents, level, reasons, demo: true }`; no names, phone numbers, or sale history. |
+| `GET /api/v1/buying-power?shop=<uuid>&customer=<uuid>` | A lender/demo client with the `x-api-key` matching server-only `LENDER_API_KEY` | `401` for an invalid key, `400` for invalid IDs, `403` without that customer’s current consent, `429` when rate limited. Success returns only `{ limitCents, level, reasons, demo: true }`; no names, phone numbers, or sale history. |
 | `GET /api/health` | Public uptime checker | Cheap database check; return only `{ ok: true }` on success and a non-success status if unavailable. Never expose rows, errors, or credentials. |
 
 The lender API is a demonstration of the planned data product, not a real lender integration
@@ -231,18 +231,36 @@ owner confirms receipt through `payCash`. A sale with an approved tab remains
    consent and records `consent_at` in `shop_customers`; the phone is unique within the shop.
 2. The customer enters a four-digit PIN on the owner’s device. `setCustomerPin` hashes it
    server-side and stores only `shop_customers.pin_hash`; consent must already exist.
+   The owner then separately attests that they verified the customer in person;
+   `confirmCustomerIdentity` records `owner_confirmed_at` only after that explicit action.
 3. The owner creates a sale on the authenticated sell page without a public customer QR;
    the phone-only customer record is attached when the owner starts PIN approval.
-4. The owner selects the phone-only customer. The customer enters the PIN; the server-only
-   `verifyCustomerPin` helper checks the stored hash and applies lockout state in
-   `shop_customers` after five failures for 15 minutes.
-5. `approveTab` verifies the owner/shop relationship, consent, PIN (in the same server-side
-   operation, not via a client-supplied “verified” flag), sale amount and available per-shop
-   limit. In one transaction it records `pending` → `tab_requested` → `approved`, updating
-   `sales` and any needed `shop_customers` confirmation atomically. No PIN or hash is sent to
-   the browser or written to logs.
+4. The owner selects the phone-only customer. The customer enters the PIN in the approval
+   flow. The server checks the bcryptjs hash; PostgreSQL `pgcrypto.crypt()` is not compatible
+   with the tested bcryptjs `$2b$` format, so the server passes the verification result and
+   exact hash snapshot to the restricted RPC.
+5. `approveTab` keeps session, role, and shop resolution in the server action. The service-role
+   RPC locks the sale and customer rows, verifies the owner/shop, customer status and consent,
+   PIN hash snapshot and lockout, QR expiry/reuse, state, and credit exposure. It calculates
+   the buying-power limit from database history, updates the cached limit, and records
+   `pending` → `tab_requested` → `approved` in one PostgreSQL transaction. A wrong PIN returns
+   a business result after updating failure/lockout telemetry so that update commits without
+   changing the sale or limit. An unexpected SQL failure aborts the whole RPC transaction.
+   The PIN and hash remain server-side. PIN comparison is a preflight, but a changed hash or
+   lockout is rechecked under the customer row lock before approval.
 
-### C. Cash sale logged against a customer
+### C. Customer QR link and lender consent
+
+1. Signup is email/password. Before linking a customer QR, the signed-in customer requests an
+   Auth phone change and enters the SMS OTP. The link RPC matches that Auth-confirmed phone to
+   the shop’s existing phone record and records the customer’s consent; profile phone data is
+   not used for identity. An unverified or mismatched number cannot claim the record.
+2. The customer can grant or revoke lender sharing separately for each shop from `/me`.
+   `set_lender_sharing_consent` writes only the signed-in customer’s own link. The lender API
+   keeps API-key authentication and returns `403` unless that exact shop/customer record has
+   current consent; it returns only the aggregate buying-power result.
+
+### D. Cash sale logged against a customer
 
 1. The owner selects or adds the customer. A new record requires consent before association;
    `addCustomer` writes `shop_customers`.
@@ -256,7 +274,7 @@ owner confirms receipt through `payCash`. A sale with an approved tab remains
    from this shop’s history; cash contributes at the lower weight defined in
    `lib/buyingPower.ts`. This touches `sales` and `shop_customers`.
 
-### D. Customer repays a tab; shopkeeper records it
+### E. Customer repays a tab; shopkeeper records it
 
 1. The owner opens an outstanding approved sale from their own ledger. Read `shops`,
    `shop_customers`, `sales`, and its `repayments`, checking ownership and remaining amount.

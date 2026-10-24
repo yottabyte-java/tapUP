@@ -21,6 +21,9 @@ const { createAdminClientMock, createSessionClientMock, mockState } = vi.hoisted
     insertedCustomer: null as Record<string, unknown> | null,
     recordedFilters: [] as Array<{ table: string; column: string; value: unknown }>,
     adminUpdates: 0,
+    profileRole: "shop_owner" as "shop_owner" | "customer",
+    rpcResult: { ok: false, error: "sale_not_approvable" } as Record<string, unknown>,
+    rpcCalls: [] as Array<{ name: string; args: Record<string, unknown> }>,
   },
 }));
 
@@ -39,6 +42,7 @@ vi.mock("next/headers", () => ({
 }));
 
 vi.mock("@/lib/lenderData", () => ({
+  LenderConsentRequiredError: class LenderConsentRequiredError extends Error {},
   LenderDataAccessError: class LenderDataAccessError extends Error {},
   loadBuyingPowerHistory: vi.fn(),
 }));
@@ -86,7 +90,7 @@ function queryResult(table: string, state: {
     mockState.insertedCustomer = state.insertValue;
     return { id: CUSTOMER_ID };
   }
-  if (table === "profiles") return { role: "shop_owner" };
+  if (table === "profiles") return { role: mockState.profileRole };
   if (table === "shops") return [{ id: OWNER_SHOP_ID }];
   if (table === "shop_customers") return customerRow;
   if (table === "sales" && state.columns.includes("qr_token_hash")) {
@@ -190,6 +194,10 @@ function configureClients() {
   };
   const adminClient = {
     from: vi.fn((table: string) => makeQuery(table, "admin")),
+    rpc: vi.fn(async (name: string, args: Record<string, unknown>) => {
+      mockState.rpcCalls.push({ name, args });
+      return { data: mockState.rpcResult, error: null };
+    }),
   };
   createSessionClientMock.mockResolvedValue(sessionClient);
   createAdminClientMock.mockReturnValue(adminClient);
@@ -204,6 +212,9 @@ describe("security checks", () => {
     mockState.insertedCustomer = null;
     mockState.recordedFilters = [];
     mockState.adminUpdates = 0;
+    mockState.profileRole = "shop_owner";
+    mockState.rpcResult = { ok: false, error: "sale_not_approvable" };
+    mockState.rpcCalls = [];
     vi.stubEnv("LENDER_API_KEY", "security-test-key");
   });
 
@@ -221,8 +232,22 @@ describe("security checks", () => {
     // WHY: A customer relationship must match both the sale's shop and the current Auth user.
   });
 
+  it("restricts the atomic approval RPC to service_role with a fixed search path and row locks", () => {
+    const schema = readFileSync(resolve(process.cwd(), "supabase/schema.sql"), "utf8");
+    const approvalFunction = schema.match(/CREATE OR REPLACE FUNCTION public\.approve_tab_atomic\([\s\S]*?\n\$\$;/)?.[0] ?? "";
+    expect(approvalFunction).toContain("SECURITY DEFINER");
+    expect(approvalFunction).toContain("SET search_path = ''");
+    expect(approvalFunction).toContain("FOR UPDATE");
+    expect(approvalFunction).toContain("pin_was_supplied");
+    expect(schema).toContain("REVOKE ALL ON FUNCTION public.approve_tab_atomic(uuid, uuid, uuid, uuid, text, boolean, boolean)");
+    expect(schema).toContain("FROM PUBLIC, anon, authenticated");
+    expect(schema).toContain("GRANT EXECUTE ON FUNCTION public.approve_tab_atomic(uuid, uuid, uuid, uuid, text, boolean, boolean)");
+    expect(schema).toContain("TO service_role");
+  });
+
   it("requires a Supabase-confirmed Auth phone for customer linking, not the editable profile phone", async () => {
     configureClients();
+    mockState.profileRole = "customer";
     const rls = readFileSync(resolve(process.cwd(), "supabase/rls.sql"), "utf8");
     const linkingFunction = rls.match(/CREATE FUNCTION public\.link_shop_customer_with_consent[\s\S]*?\n\$\$;/)?.[0] ?? "";
     const profilePhoneGrant = rls.match(/GRANT UPDATE \([^)]*\)\s+ON public\.profiles TO authenticated;/)?.[0] ?? "";
@@ -236,7 +261,7 @@ describe("security checks", () => {
 
     const result = await getCustomerPayConsentState("a".repeat(32));
     expect(result).toEqual({ ok: false, error: "invalid_link" });
-    expect(createAdminClientMock).not.toHaveBeenCalled();
+    expect(createAdminClientMock).toHaveBeenCalledOnce();
   });
 
   it("normalizes Auth phones with or without the E.164 plus prefix", () => {
@@ -245,10 +270,9 @@ describe("security checks", () => {
     expect(southAfricanPhoneSchema.parse("27825550199")).toBe("+27825550199");
   });
 
-  it("does not expose a foreign shop's sale through the owner action lookup", async () => {
+  it("uses the transaction RPC scoped to the authenticated owner's shop", async () => {
     configureClients();
-    mockState.adminQueryMode = "sale";
-    mockState.saleOwned = false;
+    mockState.rpcResult = { ok: false, error: "sale_or_customer_not_found" };
 
     const result = await approveTab({
       saleId: FOREIGN_SALE_ID,
@@ -256,11 +280,15 @@ describe("security checks", () => {
     });
 
     expect(result).toEqual({ ok: false, error: "sale_or_customer_not_found" });
-    expect(mockState.recordedFilters).toContainEqual({
-      table: "sales",
-      column: "shop_id",
-      value: OWNER_SHOP_ID,
-    });
+    expect(mockState.rpcCalls).toEqual([{
+      name: "approve_tab_atomic",
+      args: expect.objectContaining({
+        target_sale_id: FOREIGN_SALE_ID,
+        target_shop_customer_id: CUSTOMER_ID,
+        target_shop_id: OWNER_SHOP_ID,
+        expected_owner_id: OWNER_ID,
+      }),
+    }]);
   });
 
   it("locks PIN attempts after five failures for fifteen minutes", () => {
@@ -296,7 +324,7 @@ describe("security checks", () => {
 
   it("rejects a tab above the buying-power limit before any write", async () => {
     configureClients();
-    mockState.adminQueryMode = "tab_history";
+    mockState.rpcResult = { ok: false, error: "insufficient_buying_power" };
 
     const result = await approveTab({
       saleId: SALE_ID,
@@ -305,6 +333,7 @@ describe("security checks", () => {
 
     expect(result).toEqual({ ok: false, error: "insufficient_buying_power" });
     expect(mockState.adminUpdates).toBe(0);
+    expect(mockState.rpcCalls).toHaveLength(1);
   });
 
   it("rejects client-supplied sale totals before reaching database access", async () => {

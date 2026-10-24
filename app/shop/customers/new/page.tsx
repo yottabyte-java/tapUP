@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { PinPad } from "@/components/PinPad";
-import { addCustomer, setCustomerPin } from "@/lib/actions/customers";
+import { addCustomer, confirmCustomerIdentity, setCustomerPin } from "@/lib/actions/customers";
 
 type CreatedCustomer = {
   shopCustomerId: string;
@@ -26,6 +26,8 @@ export default function NewCustomerPage() {
   const [customer, setCustomer] = useState<CreatedCustomer | null>(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [pinSaved, setPinSaved] = useState(false);
+  const [identityVerified, setIdentityVerified] = useState(false);
 
   async function createCustomer(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -50,8 +52,26 @@ export default function NewCustomerPage() {
     if (!customer) return { ok: false as const, error: "customer_not_found" };
     const result = await setCustomerPin({ shopCustomerId: customer.shopCustomerId, pin });
     if (!result.ok) return result;
-    router.replace("/shop/sell");
+    setPinSaved(true);
     return { ok: true as const };
+  }
+
+  async function confirmIdentity() {
+    if (!customer || !identityVerified || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      const result = await confirmCustomerIdentity({ shopCustomerId: customer.shopCustomerId });
+      if (!result.ok) {
+        setError("We couldn't record the identity confirmation. Please try again.");
+        return;
+      }
+      router.replace("/shop/sell");
+    } catch {
+      setError("We couldn't record the identity confirmation. Please try again.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   if (customer) {
@@ -67,12 +87,36 @@ export default function NewCustomerPage() {
           <p className="text-center text-sm text-foreground/75">
             {customer.name} · {customer.phone}
           </p>
-          <PinPad
-            description="Ask the customer to enter a private 4-digit PIN on this phone."
-            onSubmit={savePin}
-            submitLabel="Saving PIN"
-            title="Create customer PIN"
-          />
+          {!pinSaved ? (
+            <PinPad
+              description="Ask the customer to enter a private 4-digit PIN on this phone."
+              onSubmit={savePin}
+              submitLabel="Saving PIN"
+              title="Create customer PIN"
+            />
+          ) : (
+            <div className="mt-5">
+              <p className="text-center text-sm text-teal" role="status">PIN saved.</p>
+              <label className="mt-5 flex cursor-pointer items-start gap-3 text-sm leading-relaxed">
+                <input
+                  checked={identityVerified}
+                  className="mt-0.5 h-5 w-5 shrink-0 accent-teal"
+                  onChange={(event) => setIdentityVerified(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>I verified this customer&apos;s identity in person and confirm the shop record belongs to them.</span>
+              </label>
+              <button
+                className="mt-5 min-h-12 w-full rounded-full bg-teal px-5 text-sm font-semibold text-[#041A1E] disabled:opacity-40"
+                disabled={!identityVerified || saving}
+                onClick={() => void confirmIdentity()}
+                type="button"
+              >
+                {saving ? "Recording confirmation…" : "Confirm customer identity"}
+              </button>
+              {error && <p className="mt-3 text-sm text-red-200" role="alert">{error}</p>}
+            </div>
+          )}
         </section>
       </main>
     );

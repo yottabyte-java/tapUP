@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Cart, type CartLine, type SaleItemInput } from "@/components/Cart";
 import { PinPad } from "@/components/PinPad";
+import { confirmCustomerIdentity } from "@/lib/actions/customers";
 import { approveTab, createSale } from "@/lib/actions/sales";
 import { formatRand } from "@/lib/money";
 import { getProductByBarcode, products, type Product } from "@/lib/products";
@@ -129,6 +130,7 @@ export default function ShopSellPage() {
   const [activeSale, setActiveSale] = useState<ActiveSale | null>(null);
   const [now, setNow] = useState(0);
   const [phoneCustomers, setPhoneCustomers] = useState<PhoneCustomer[]>([]);
+  const [customersToConfirm, setCustomersToConfirm] = useState<PhoneCustomer[]>([]);
   const [pinApprovalOpen, setPinApprovalOpen] = useState(false);
   const [selectedPhoneCustomerId, setSelectedPhoneCustomerId] = useState("");
 
@@ -179,9 +181,25 @@ export default function ShopSellPage() {
           .order("display_name");
         if (customersError) throw customersError;
 
+        const { data: unconfirmedCustomers, error: confirmationError } = await supabase
+          .from("shop_customers")
+          .select("id, display_name, customer_phone")
+          .eq("shop_id", shop.id)
+          .eq("status", "active")
+          .not("customer_profile_id", "is", null)
+          .not("consent_at", "is", null)
+          .is("owner_confirmed_at", null)
+          .order("display_name");
+        if (confirmationError) throw confirmationError;
+
         if (!disposed) {
           setShopName(shop.name);
           setPhoneCustomers((customers ?? []).map((customer) => ({
+            id: customer.id,
+            displayName: customer.display_name,
+            phone: customer.customer_phone,
+          })));
+          setCustomersToConfirm((unconfirmedCustomers ?? []).map((customer) => ({
             id: customer.id,
             displayName: customer.display_name,
             phone: customer.customer_phone,
@@ -222,6 +240,15 @@ export default function ShopSellPage() {
     });
     setPageError("");
   }, []);
+
+  async function attestCustomerIdentity(customer: PhoneCustomer) {
+    const result = await confirmCustomerIdentity({ shopCustomerId: customer.id });
+    if (!result.ok) {
+      setPageError("We couldn't record that identity confirmation. Refresh and try again.");
+      return;
+    }
+    setCustomersToConfirm((current) => current.filter((item) => item.id !== customer.id));
+  }
 
   function handleBarcode(barcode: string) {
     const product = getProductByBarcode(barcode);
@@ -331,6 +358,29 @@ export default function ShopSellPage() {
         <p className="mt-3 rounded-lg border border-red-400/30 bg-red-950/20 px-3 py-2 text-sm text-red-200" role="alert">
           {pageError}
         </p>
+      )}
+
+      {customersToConfirm.length > 0 && (
+        <section aria-labelledby="customer-confirmation-title" className="mt-3 rounded-2xl border border-amber/40 bg-card p-4">
+          <h2 className="text-sm font-semibold" id="customer-confirmation-title">Confirm linked customers</h2>
+          <p className="mt-1 text-xs leading-relaxed text-foreground/70">
+            Confirm only after you have checked the customer&apos;s identity in person.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {customersToConfirm.map((customer) => (
+              <li className="flex items-center justify-between gap-3 border-t border-white/10 pt-2" key={customer.id}>
+                <span className="min-w-0 text-xs">{customer.displayName} · {customer.phone}</span>
+                <button
+                  className="min-h-9 shrink-0 rounded-full border border-amber/50 px-3 text-xs font-semibold"
+                  onClick={() => void attestCustomerIdentity(customer)}
+                  type="button"
+                >
+                  I verified them
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       {activeSale ? (
