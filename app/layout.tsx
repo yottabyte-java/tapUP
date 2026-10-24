@@ -12,6 +12,8 @@ const dmSans = DM_Sans({
 export const metadata: Metadata = {
   title: "tapUP",
   description: "The spaza tab, but with a record.",
+  // WHY: The manifest lets browsers install tapUP with its branded name, theme, and app icons.
+  manifest: "/manifest.webmanifest",
 };
 
 export const viewport: Viewport = {
