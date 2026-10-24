@@ -9,7 +9,7 @@ import { addCustomer, getCustomerPayConsentState } from "@/lib/actions/customers
 import { createSale, approveTab } from "@/lib/actions/sales";
 import { isLocked, registerFailure, type PinLockoutState } from "@/lib/pin";
 import { createSaleToken, verifySaleToken } from "@/lib/qr";
-import { createSaleSchema, addCustomerSchema } from "@/lib/validation";
+import { createSaleSchema, addCustomerSchema, southAfricanPhoneSchema } from "@/lib/validation";
 import { loadBuyingPowerHistory } from "@/lib/lenderData";
 
 const { createAdminClientMock, createSessionClientMock, mockState } = vi.hoisted(() => ({
@@ -232,10 +232,17 @@ describe("security checks", () => {
     expect(linkingFunction).not.toContain("SELECT p.phone");
     expect(profilePhoneGrant).toContain("full_name");
     expect(profilePhoneGrant).not.toMatch(/\bphone\b/i);
+    expect(linkingFunction).toContain("WHEN u.phone ~ '^27[0-9]{9}$' THEN '+' || u.phone");
 
     const result = await getCustomerPayConsentState("a".repeat(32));
     expect(result).toEqual({ ok: false, error: "invalid_link" });
     expect(createAdminClientMock).not.toHaveBeenCalled();
+  });
+
+  it("normalizes Auth phones with or without the E.164 plus prefix", () => {
+    expect(southAfricanPhoneSchema.parse("082 555 0199")).toBe("+27825550199");
+    expect(southAfricanPhoneSchema.parse("+27 82 555 0199")).toBe("+27825550199");
+    expect(southAfricanPhoneSchema.parse("27825550199")).toBe("+27825550199");
   });
 
   it("does not expose a foreign shop's sale through the owner action lookup", async () => {

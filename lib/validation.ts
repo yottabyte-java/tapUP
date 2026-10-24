@@ -10,14 +10,15 @@ export const southAfricanPhoneSchema = z
   .string()
   .trim()
   .regex(
-    /^(?:0\d{2}[ -]?\d{3}[ -]?\d{4}|\+27[ -]?\d{2}[ -]?\d{3}[ -]?\d{4})$/,
+    /^(?:0\d{2}[ -]?\d{3}[ -]?\d{4}|\+?27[ -]?\d{2}[ -]?\d{3}[ -]?\d{4})$/,
     "Enter a South African number such as 082 555 0199 or +27 82 555 0199",
   )
   .transform((phone) => {
     const compact = phone.replace(/[ -]/g, "");
     // WHY: E.164 gives every locally-entered or international number the same stored form.
-    return compact.startsWith("+27")
-      ? compact
+    if (compact.startsWith("+27")) return compact;
+    return compact.startsWith("27")
+      ? `+${compact}`
       : `+27${compact.slice(1)}`;
   });
 

@@ -55,7 +55,12 @@ BEGIN
   END IF;
 
   -- WHY: A profile phone is editable account data, so only Auth's OTP-confirmed phone can prove ownership.
-  SELECT u.phone
+  -- WHY: GoTrue may return a confirmed South African number without its E.164 plus prefix.
+  SELECT CASE
+      WHEN u.phone ~ '^27[0-9]{9}$' THEN '+' || u.phone
+      WHEN u.phone ~ '^0[0-9]{9}$' THEN '+27' || substring(u.phone FROM 2)
+      ELSE u.phone
+    END
     INTO caller_phone
     FROM auth.users AS u
     JOIN public.profiles AS p ON p.id = u.id
