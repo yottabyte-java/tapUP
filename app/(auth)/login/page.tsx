@@ -3,7 +3,7 @@
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
+import { signIn } from "@/lib/actions/auth";
 
 const INVALID_CREDENTIALS_MESSAGE = "Email or password is incorrect.";
 
@@ -21,36 +21,25 @@ export default function LoginPage() {
     setErrorMessage("");
 
     try {
-      const supabase = createClient();
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
-      });
-
-      // WHY: A shared message prevents the login form from revealing whether an email exists.
-      if (error || !data.user) {
+      const result = await signIn({ email, password });
+      if (!result.ok && result.error === "rate_limited") {
+        setErrorMessage("Too many sign-in attempts. Please wait 15 minutes and try again.");
+        return;
+      }
+      if (!result.ok && result.error === "invalid_credentials") {
+        // WHY: A shared message prevents the login form from revealing whether an email exists.
         setErrorMessage(INVALID_CREDENTIALS_MESSAGE);
         return;
       }
-
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("role")
-        .eq("id", data.user.id)
-        .single();
-
-      if (profileError || !profile) {
+      if (!result.ok) {
         setErrorMessage("We couldn't load your account. Please try again.");
         return;
       }
 
-      if (profile.role === "shop_owner") {
+      if (result.role === "shop_owner") {
         router.replace("/shop/sell");
-      } else if (profile.role === "customer") {
-        router.replace("/me");
       } else {
-        setErrorMessage("Your account role could not be identified. Please contact support.");
-        return;
+        router.replace("/me");
       }
 
       // WHY: Refresh server-rendered routes so they see the session cookie just established by Supabase.

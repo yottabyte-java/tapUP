@@ -1,12 +1,17 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { calculateBuyingPower } from "@/lib/buyingPower";
+import { checkRateLimit, getClientIp, RATE_LIMITS } from "@/lib/rateLimit";
 import { lenderQuerySchema } from "@/lib/validation";
 import { LenderDataAccessError, loadBuyingPowerHistory } from "@/lib/lenderData";
 
-function jsonResponse(body: Record<string, unknown>, status = 200): Response {
+function jsonResponse(
+  body: Record<string, unknown>,
+  status = 200,
+  extraHeaders: Record<string, string> = {},
+): Response {
   return Response.json(body, {
     status,
-    headers: { "Cache-Control": "no-store" },
+    headers: { "Cache-Control": "no-store", ...extraHeaders },
   });
 }
 
@@ -31,6 +36,19 @@ export async function GET(request: Request): Promise<Response> {
     return jsonResponse({ error: "Unauthorized" }, 401);
   }
 
+  const rateLimit = checkRateLimit(
+    getClientIp(request.headers),
+    "lender-api",
+    RATE_LIMITS.lenderApi,
+  );
+  if (!rateLimit.allowed) {
+    return jsonResponse(
+      { error: "Too many requests" },
+      429,
+      { "Retry-After": rateLimit.retryAfterSeconds.toString() },
+    );
+  }
+
   const url = new URL(request.url);
   const query = lenderQuerySchema.safeParse({
     shop: url.searchParams.get("shop"),
@@ -40,7 +58,6 @@ export async function GET(request: Request): Promise<Response> {
     return jsonResponse({ error: "Invalid shop or customer identifier" }, 400);
   }
 
-  // TODO: Return 429 after applying lib/rateLimit.ts when that shared limiter is available.
   const now = new Date();
   try {
     const history = await loadBuyingPowerHistory(query.data.shop, query.data.customer, now);

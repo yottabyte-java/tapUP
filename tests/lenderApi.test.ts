@@ -67,4 +67,26 @@ describe("lender buying-power API", () => {
     expect(body).toMatchObject({ limitCents: 0, level: 0, demo: true });
     expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
+
+  it("returns 429 with Retry-After after the IP reaches the lender API limit", async () => {
+    vi.mocked(loadBuyingPowerHistory).mockResolvedValue({ sales: [], repayments: [] });
+    const limitedRequest = () => new Request(
+      `http://localhost/api/v1/buying-power?shop=${SHOP_ID}&customer=${CUSTOMER_ID}`,
+      {
+        headers: {
+          "x-api-key": API_KEY,
+          "x-real-ip": "198.51.100.241",
+        },
+      },
+    );
+
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      expect((await GET(limitedRequest())).status).toBe(200);
+    }
+    const blockedResponse = await GET(limitedRequest());
+
+    expect(blockedResponse.status).toBe(429);
+    expect(blockedResponse.headers.get("Retry-After")).toBeTruthy();
+    expect(loadBuyingPowerHistory).toHaveBeenCalledTimes(60);
+  });
 });

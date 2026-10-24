@@ -1,10 +1,12 @@
 "use server";
 
 import { createHash } from "node:crypto";
+import { headers } from "next/headers";
 import { calculateBuyingPower, type BuyingPowerHistory, type BuyingPowerSale } from "@/lib/buyingPower";
 import { products } from "@/lib/products";
 import { isLocked, registerFailure, verifyPin } from "@/lib/pin";
 import { createSaleToken, verifySaleToken } from "@/lib/qr";
+import { checkRateLimit, getClientIp, RATE_LIMITS } from "@/lib/rateLimit";
 import {
   approveTabSchema,
   createSaleSchema,
@@ -757,6 +759,12 @@ export async function approveTab(input: unknown): Promise<
     })) {
       return { ok: false, error: "pin_locked" };
     }
+    const rateLimit = checkRateLimit(
+      getClientIp(await headers()),
+      "pin:approve-tab",
+      RATE_LIMITS.pin,
+    );
+    if (!rateLimit.allowed) return { ok: false, error: "pin_rate_limited" };
     const validPin = await verifyPin(pin, customer.pinHash);
     if (!validPin) {
       const failureResult = await recordFailedPin(owner.admin, customer.id, owner.shopId);

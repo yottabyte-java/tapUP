@@ -1,9 +1,11 @@
 "use server";
 
 import { createHash } from "node:crypto";
+import { headers } from "next/headers";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient as createSessionClient } from "@/lib/supabase/server";
 import { hashPin, isLocked, registerFailure, verifyPin } from "@/lib/pin";
+import { checkRateLimit, getClientIp, RATE_LIMITS } from "@/lib/rateLimit";
 import { addCustomerSchema, saleTokenSchema, setPinSchema } from "@/lib/validation";
 import { verifySaleToken } from "@/lib/qr";
 import { z } from "zod";
@@ -373,6 +375,13 @@ export async function verifyCustomerPin(input: unknown): Promise<
   })) {
     return { ok: false, error: "pin_locked" };
   }
+
+  const rateLimit = checkRateLimit(
+    getClientIp(await headers()),
+    "pin:verify-customer",
+    RATE_LIMITS.pin,
+  );
+  if (!rateLimit.allowed) return { ok: false, error: "pin_rate_limited" };
 
   let valid: boolean;
   try {

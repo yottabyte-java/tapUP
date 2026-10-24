@@ -16,6 +16,7 @@ const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "backspace", "0", "cl
 function errorMessage(error: string): string {
   if (error === "invalid_pin") return "That PIN doesn't match. Try again.";
   if (error === "pin_locked") return "Too many tries. Try again in 15 minutes.";
+  if (error === "pin_rate_limited") return "Too many PIN attempts from this device. Try again in 15 minutes.";
   if (error === "pin_not_set" || error === "pin_required") return "This customer hasn't set a PIN yet.";
   return "We couldn't verify the PIN. Please try again.";
 }
