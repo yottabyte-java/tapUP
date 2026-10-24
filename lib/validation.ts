@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 const uuidSchema = z.string().uuid();
+// WHY: PostgreSQL permits any canonical UUID bit pattern, including IDs derived directly from MD5 demo seeds.
+const databaseUuidSchema = z.string().regex(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i);
 
 export const saleTokenSchema = z.string().regex(/^[0-9a-f]{32}$/);
 
@@ -53,7 +55,7 @@ export const setPinSchema = z.object({
 }).strict();
 
 export const repayTabSchema = z.object({
-  saleId: uuidSchema,
+  saleId: databaseUuidSchema,
   amountCents: z.number().int().positive().safe(),
 }).strict();
 
