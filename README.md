@@ -51,3 +51,8 @@ security work separate from feature work, and give you a checkpoint after each s
 - 24 Oct (Sat): agent 4 finishes, agent 5. War Rooms on day 2
 - 25 Oct (Sun): agent 6, deploy, record the video. Hackathon ends 17:00, no mentors after
 - 26 Oct (Mon): upload early; hard deadline 23:59
+
+## Browser regression tests
+
+See [Chromium judge journey](docs/BROWSER_TESTS.md) for disposable Supabase setup,
+`npm run test:e2e`, and the private local HTML report (`npm run test:e2e:report`).

@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useState } from "react";
 import { addCents, formatRand } from "@/lib/money";
 import { products, type Product } from "@/lib/products";
@@ -25,24 +24,12 @@ type CartProps = {
 const DESIGN_SAMPLE_PRODUCTS = products.slice(0, 3);
 
 function ProductImage({ product }: { product: Product }) {
-  const [imageFailed, setImageFailed] = useState(false);
-
+  // WHY: The demo catalogue has no image assets; render its fallback without broken-image requests.
   return (
     <div className="relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-[#E9F3EC]">
       <span aria-hidden="true" className="text-xl font-bold text-[#138B73]">
         {product.name.slice(0, 1)}
       </span>
-      {!imageFailed && (
-        <Image
-          alt=""
-          className="absolute inset-0 h-full w-full object-contain"
-          height={96}
-          onError={() => setImageFailed(true)}
-          src={product.imagePath}
-          unoptimized
-          width={96}
-        />
-      )}
     </div>
   );
 }

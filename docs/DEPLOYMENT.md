@@ -34,8 +34,12 @@ repaired, with UI regressions retaining stale-shop protection. These repairs sti
 need their migrations installed in an approved hosted target before release.
 
 Local Auth/PostgREST/RLS and built-app HTTP verification now run successfully.
-Hosted HTTPS, actual email/phone verification, browser end-to-end flows and final
-review remain release gates; local tests do not establish deployed readiness.
+Hosted HTTPS, actual email/phone verification and final review remain release
+gates. The real local Chromium suite is documented in [BROWSER_TESTS.md](BROWSER_TESTS.md);
+local browser results do not establish deployed readiness.
+Observed locally: 12 Chromium scenarios passed across desktop/mobile, plus all
+192 existing tests with real local Auth/PostgREST/PostgreSQL. These are separate
+from remote CI and hosted verification; see `docs/HANDOFF.md` for limits.
 
 ## 2. Continuous integration (Layer 2)
 

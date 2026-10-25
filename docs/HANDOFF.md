@@ -393,3 +393,65 @@ zero failures/skips, plus lint, types, production build and security checks.
 Merge-specific whitespace, conflict-marker, history-secret and ancestry checks
 are recorded in workspace validation context. This is a local merge only; no push,
 PR merge, hosted SQL or deployment is authorized by the divergence repair.
+
+## Chromium UI debugging — 2026-10-25
+
+- Continue from `69e0323` on the assigned task branch. No hosted data, merge,
+  deployment or production migration was used. `.idea/` and PIN compatibility SQL
+  remain preserved. No new SQL migration is needed by these UI/harness changes.
+- Reproduced real production CSS failure: Webpack ignored the Turbopack-only
+  Tailwind loader. Shared PostCSS configuration fixes production styling. The
+  catalogue has no images, so render its existing letter placeholders directly.
+- Owner request refresh now reads the active QR sale's persisted state through
+  session/RLS. A completed customer payment clears the QR/cart exactly once;
+  absence from the pending list is never treated as proof of payment.
+- `/me` now shows actual pending/approved/settled history, repayments and debt
+  from its existing scoped history. The owner ledger computes the same scoring
+  rule from its history instead of displaying a stale `credit_limit_cents` cache.
+- A real local cache-update fault reproduced a committed repayment reported as
+  "not recorded." Owner repayment feedback now distinguishes committed/unknown
+  outcomes, blocks retry until records refresh, and guards rapid duplicate events.
+  Server actions, RPCs, RLS, consent, PIN and service-role boundaries are retained.
+- `/pay/[token]` now uses a request-time boundary before Auth/clock work. QR output
+  has the standard quiet zone. The old bundled scanner rejects some valid clean
+  screenshots; test-only jsQR independently decodes those pixels. Real camera
+  permissions/scanning remain a separate manual check.
+- See `docs/BROWSER_TESTS.md`: real Chromium, real UI login once/run, isolated
+  synthetic accounts, real local Auth/PostgREST, integer-cent DB assertions,
+  desktop/mobile screenshots, private traces and an evidence export command.
+  No success response is mocked. Deliberate network interruption and a temporary
+  per-customer DB trigger exercise recovery. Keep one worker; do not disable the
+  login limiter when debugging. Current CI does not claim Playwright coverage.
+- Initial browser failures were investigated, including a harness CDP connection,
+  QR decoder and login-limit issue, then cached-route/pending-navigation test
+  assumptions. Do not cite an isolated pass as the whole journey. Final results
+  are recorded below and in the workspace validation record.
+- Not covered by this browser setup: hosted HTTPS/Vercel, email delivery, OTP,
+  initial linking/consent capture, actual expired-token refresh, or phone-only PIN
+  entry in Chromium. Existing PostgreSQL/Supabase tests cover PIN/RLS and lock
+  waits separately. No production readiness claim follows from local passes.
+
+### Observed final local results
+
+- Final Chromium: **12 passed, 0 failed, 0 skipped, 0 flaky** (six journeys × two
+  viewports; no retries). UI, persisted cents/receipts/state and scoring agreed for
+  demo payment, full/split cash, approval/rejection and partial/full repayment.
+  Refresh, navigation, duplicate clicks, invalid input, expiry, unauthorized
+  access, transport failure and post-write DB failure/recovery were exercised.
+- Existing Vitest suite: **192 passed, 0 failed, 0 skipped**: 114 unit/action/query/
+  render, 21 interactive UI, 41 PostgreSQL and 16 real Supabase integration tests.
+  Lint, Next route type generation, TypeScript and production build passed.
+  Reproducible install passed; audit found zero vulnerabilities; scoped Semgrep
+  found zero application findings and all four rule controls passed. Gitleaks
+  control passed. License inventory now lists 71 entries, with the same 15
+  advisories already reviewed in `docs/LICENSE_REVIEW.md`.
+- Browser diagnostics had no unexpected errors, warnings or HTTP failures. The
+  injected failed POST and its console resource error were expected once per
+  viewport. Completed HTTP-200 Flight stream navigation cancellations are
+  recorded separately, not presented as application failures.
+- One final-run setup failed after repeated diagnostic runs reached the real
+  sign-in limiter. Restarted only the disposable Next process, then the full
+  suite passed. Limits were not disabled and no failed result was hidden.
+- Raw HTML report/traces stay private and ignored. Publish only inspected
+  screenshots and sanitized exports. No remote CI run for these local changes
+  is claimed. No new migration, hosted operation or production deployment.

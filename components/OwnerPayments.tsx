@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { PinPad } from "@/components/PinPad";
 import { approveTab, payCash, rejectTab } from "@/lib/actions/sales";
 import { formatRand } from "@/lib/money";
-import { loadOwnerPaymentPage, ownerPaymentError, type PendingPayment, type PaymentCursor, type PaymentCustomer } from "@/lib/ownerPayments";
+import { loadOwnerPaymentPage, loadOwnerSaleState, ownerPaymentError, type PendingPayment, type PaymentCursor, type PaymentCustomer } from "@/lib/ownerPayments";
 export type { PendingPayment } from "@/lib/ownerPayments";
 
 type Result = { ok: true } | { ok: false; error: string };
@@ -46,6 +46,7 @@ type OwnerPaymentsProps = {
   shopId: string;
   refreshKey: string;
   onCompleted: (saleId: string) => void;
+  activeSaleId?: string;
 };
 
 /** Reset request pages, feedback and PIN state whenever the active shop changes. */
@@ -53,7 +54,7 @@ export function OwnerPayments(props: OwnerPaymentsProps) {
   return <OwnerPaymentRequests key={props.shopId} {...props} />;
 }
 
-function OwnerPaymentRequests({ shopId, refreshKey, onCompleted }: OwnerPaymentsProps) {
+function OwnerPaymentRequests({ shopId, refreshKey, onCompleted, activeSaleId }: OwnerPaymentsProps) {
   const [sales, setSales] = useState<PendingPayment[]>([]);
   const [customers, setCustomers] = useState<PaymentCustomer[]>([]);
   const [cursor, setCursor] = useState<PaymentCursor | null>(null);
@@ -64,20 +65,33 @@ function OwnerPaymentRequests({ shopId, refreshKey, onCompleted }: OwnerPayments
   const submitting = useRef(false);
   const generation = useRef(0);
   const mounted = useRef(false);
+  const completedSale = useRef<string | null>(null);
+  const completedCallback = useRef(onCompleted);
+  useEffect(() => { completedCallback.current = onCompleted; }, [onCompleted]);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; generation.current += 1; };
   }, []);
   const load = useCallback(async (pageCursor: PaymentCursor | null = null) => {
     const request = ++generation.current;
-    const page = await loadOwnerPaymentPage(shopId, pageCursor);
+    const [page, active] = await Promise.all([
+      loadOwnerPaymentPage(shopId, pageCursor),
+      activeSaleId ? loadOwnerSaleState(shopId, activeSaleId) : null,
+    ]);
     // A refresh or shop change may finish before an older read; never restore its stale page.
     if (!mounted.current || request !== generation.current) return;
     setSales(page.sales);
     setCustomers(page.customers);
     setCursor(pageCursor);
     setNextCursor(page.nextCursor);
-  }, [shopId]);
+    // WHY: A customer's successful demo payment leaves the pending list; absence alone is not proof of payment.
+    if (active && ["paid", "approved", "repaid", "cancelled"].includes(active.status) && completedSale.current !== active.id) {
+      completedSale.current = active.id;
+      setMessage(active.status === "paid" ? "Payment received." : active.status === "cancelled"
+        ? "Sale cancelled. Any confirmed receipt remains recorded." : "Tab approved.");
+      completedCallback.current(active.id);
+    }
+  }, [shopId, activeSaleId]);
 
   useEffect(() => {
     let active = true;
@@ -112,7 +126,10 @@ function OwnerPaymentRequests({ shopId, refreshKey, onCompleted }: OwnerPayments
         return result;
       }
       setMessage(action === "cash" ? "Cash receipt recorded." : action === "reject" ? "Tab rejected. Any confirmed receipt remains recorded." : "Tab approved.");
-      if (action !== "cash" || sale.status === "pending") onCompleted(sale.id);
+      if (action !== "cash" || sale.status === "pending") {
+        completedSale.current = sale.id;
+        onCompleted(sale.id);
+      }
       if (mounted.current) {
         try { await load(cursor); } catch { if (mounted.current) setError("Action succeeded, but requests could not refresh. Refresh before continuing."); }
       }

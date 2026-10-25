@@ -41,3 +41,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Browser traces contain local session credentials; never commit or publish raw artifacts.
+/test-results/
+/playwright-report/
