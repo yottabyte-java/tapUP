@@ -3,7 +3,9 @@
 The `CI / verify` GitHub Actions job runs on pull requests, pushes to `main`, and
 manual dispatch. It installs the npm lockfile with Node 24, runs tests against an
 isolated PostgreSQL 17 container, then runs lint, TypeScript, and the production
-build. It needs no production secrets and applies no production migrations.
+build. It generates Next.js route/layout types before standalone TypeScript
+checks so fresh checkouts do not depend on a previous build. It needs no
+production secrets and applies no production migrations.
 
 Run the same checks locally:
 
@@ -11,7 +13,7 @@ Run the same checks locally:
 npm ci --no-audit --no-fund
 TAPUP_TEST_POSTGRES_CONTAINER=<local-postgres-container> npm test
 npm run lint
-npx tsc --noEmit
+npx next typegen && npx tsc --noEmit
 NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321 NEXT_PUBLIC_SUPABASE_ANON_KEY=ci-placeholder npm run build
 ```
 

@@ -24,8 +24,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
@@ -34,7 +34,7 @@ jobs:
         env:
           TAPUP_TEST_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
       - run: npm run lint
-      - run: npx tsc --noEmit
+      - run: npx next typegen && npx tsc --noEmit
       - run: npm run build
         env:
           NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
