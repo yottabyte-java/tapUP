@@ -390,13 +390,13 @@ async function BuyingPowerContent() {
   }
 
   return (
-    <main className="flex min-h-full flex-col px-3 py-3">
+    <main className="customer-buying-power-layout flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-4 py-5">
         <header className="mb-5">
           <h1 className="text-lg font-semibold">Your Buying Power</h1>
           <p className="mt-1 text-xs text-foreground/65">A separate record for each shop</p>
         </header>
-        <div className="space-y-4">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           {cards.map((card) => <ShopBuyingPower card={card} key={card.id} />)}
         </div>
       </section>

@@ -457,7 +457,7 @@ export function LedgerDashboard({ ledger }: { ledger: LedgerData }) {
   }
 
   return (
-    <main className="flex min-h-full flex-col px-3 pt-3">
+    <main className="shop-ledger-layout flex min-h-full flex-col px-3 pt-3">
       <header className="flex min-h-14 items-center justify-between px-1">
         <div>
           <h1 className="text-lg font-semibold">Ledger</h1>
@@ -539,7 +539,7 @@ export function LedgerDashboard({ ledger }: { ledger: LedgerData }) {
             onRepaymentRecorded={showConfirmation}
           />
         ) : tab === "customers" ? (
-          <section aria-label="Customers" className="space-y-2">
+          <section aria-label="Customers" className="grid grid-cols-1 gap-2 lg:grid-cols-2">
             {ledger.customers.length === 0 ? (
               <p className="rounded-xl border border-white/10 bg-card p-4 text-sm text-foreground/70">
                 No customers yet. Add a customer before recording a tab.

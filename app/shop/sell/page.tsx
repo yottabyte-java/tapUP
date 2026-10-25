@@ -327,7 +327,7 @@ export default function ShopSellPage() {
   }
 
   return (
-    <main className="flex min-h-full flex-col px-3 pt-3">
+    <main className="shop-sell-layout flex min-h-full flex-col px-3 pt-3">
       <header className="flex min-h-14 items-center justify-between px-1">
         <div className="flex min-w-0 items-center gap-2.5">
           <span aria-hidden="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-teal text-[#041A1E]">
@@ -397,7 +397,7 @@ export default function ShopSellPage() {
         }} />
 
       {activeSale ? (
-        <section aria-labelledby="payment-title" className="my-4 flex flex-1 flex-col items-center rounded-2xl border border-teal/50 bg-card px-5 py-6 text-center">
+        <section aria-labelledby="payment-title" className="sale-payment-panel my-4 flex flex-1 flex-col items-center rounded-2xl border border-teal/50 bg-card px-5 py-6 text-center">
           <h2 className="text-lg font-semibold" id="payment-title">Customer Payment</h2>
           <p className="mt-2 text-2xl font-bold">{formatRand(activeSale.totalCents)}</p>
           <p className="mt-2 text-sm text-foreground/75" role="timer">
@@ -499,7 +499,8 @@ export default function ShopSellPage() {
         </section>
       ) : (
         <>
-          <section aria-labelledby="scan-title" className="relative mt-3 flex min-h-[9.5rem] flex-col items-center justify-center overflow-hidden rounded-2xl border border-teal/40 bg-card px-4 py-4 text-center">
+          <div className="sale-workspace">
+          <section aria-labelledby="scan-title" className="sale-scan relative mt-3 flex min-h-[9.5rem] flex-col items-center justify-center overflow-hidden rounded-2xl border border-teal/40 bg-card px-4 py-4 text-center">
             <span aria-hidden="true" className="absolute left-3 top-3 h-5 w-5 rounded-tl-lg border-l-2 border-t-2 border-teal" />
             <span aria-hidden="true" className="absolute right-3 top-3 h-5 w-5 rounded-tr-lg border-r-2 border-t-2 border-teal" />
             <span aria-hidden="true" className="absolute bottom-3 left-3 h-5 w-5 rounded-bl-lg border-b-2 border-l-2 border-teal" />
@@ -517,7 +518,7 @@ export default function ShopSellPage() {
             </button>
           </section>
 
-          <section aria-labelledby="manual-title" className="mt-3">
+          <section aria-labelledby="manual-title" className="sale-manual mt-3">
             <h2 className="mb-2 px-1 text-xs font-semibold text-foreground/75" id="manual-title">Or add item manually</h2>
             <ul className="flex flex-col gap-1.5">
               {products.map((product) => (
@@ -540,13 +541,14 @@ export default function ShopSellPage() {
             </ul>
           </section>
 
-          <section aria-label="Current sale" className="mt-4 rounded-2xl border border-white/10 bg-bg p-2.5">
+          <section aria-label="Current sale" className="sale-basket mt-4 rounded-2xl border border-white/10 bg-bg p-2.5">
             <Cart
               items={cartItems}
               onCharge={handleCharge}
               onItemsChange={setCartItems}
             />
           </section>
+          </div>
         </>
       )}
 

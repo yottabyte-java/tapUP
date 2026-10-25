@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { connection } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
 function SpazaIllustration() {
@@ -49,6 +50,8 @@ function SpazaIllustration() {
 }
 
 async function RedirectSignedInUser(): Promise<null> {
+  // WHY: This session-aware redirect must wait for a request instead of running during prerendering.
+  await connection();
   const supabase = await createClient();
   const { data: { user }, error: authError } = await supabase.auth.getUser();
 
@@ -92,7 +95,7 @@ function SessionCheckFallback() {
 function Splash() {
   return (
     <main className="flex min-h-full flex-col px-3 py-3 text-center">
-      <section className="flex min-h-full flex-1 flex-col items-center rounded-[1.4rem] border border-teal/70 px-4 pb-4 pt-3">
+      <section className="home-splash flex min-h-full flex-1 flex-col items-center rounded-[1.4rem] border border-teal/70 px-4 pb-4 pt-3">
         <div aria-hidden="true" className="flex h-6 w-full items-center justify-between px-5 text-[10px] font-semibold text-foreground">
           <span>9:41</span>
           <span className="flex items-center gap-1">

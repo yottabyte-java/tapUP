@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -243,6 +243,41 @@ describe("security checks", () => {
     expect(schema).toContain("FROM PUBLIC, anon, authenticated");
     expect(schema).toContain("GRANT EXECUTE ON FUNCTION public.approve_tab_atomic(uuid, uuid, uuid, uuid, text, boolean, boolean)");
     expect(schema).toContain("TO service_role");
+  });
+
+  it("migrates lender consent for existing databases without widening access", () => {
+    const migration = readFileSync(
+      resolve(process.cwd(), "supabase/migrations/202610250003_add_lender_sharing_consent.sql"),
+      "utf8",
+    );
+    expect(migration).toContain("ADD COLUMN IF NOT EXISTS lender_sharing_consent_at timestamptz");
+    expect(migration).toContain("SET search_path = ''");
+    expect(migration).toContain("sc.customer_profile_id = caller_id");
+    expect(migration).toContain("FROM PUBLIC, anon, authenticated");
+    expect(migration).toContain("TO authenticated");
+    expect(migration).not.toContain("GRANT SELECT ON public.shop_customers TO anon");
+  });
+
+  it("keeps Supabase migration version IDs unique", () => {
+    const migrationDirectory = resolve(process.cwd(), "supabase/migrations");
+    const migrations = readdirSync(migrationDirectory).filter((name) => name.endsWith(".sql"));
+    const versions = migrations.map((name) => name.match(/^(\d+)_/)?.[1]);
+
+    expect(versions.every(Boolean)).toBe(true);
+    expect(new Set(versions).size).toBe(versions.length);
+  });
+
+  it("waits for a request before reading the home-page session", () => {
+    const homePage = readFileSync(resolve(process.cwd(), "app/page.tsx"), "utf8");
+    const sessionRedirect = homePage.match(/async function RedirectSignedInUser\(\)[\s\S]*?\n\}/)?.[0] ?? "";
+    const requestBoundary = sessionRedirect.indexOf("await connection()");
+    const sessionClient = sessionRedirect.indexOf("createClient()");
+
+    expect(requestBoundary).toBeGreaterThanOrEqual(0);
+    expect(sessionClient).toBeGreaterThan(requestBoundary);
+    expect(sessionRedirect).toContain('redirect("/shop/sell")');
+    expect(sessionRedirect).toContain('redirect("/me")');
+    expect(sessionRedirect).toContain("return null;");
   });
 
   it("requires a Supabase-confirmed Auth phone for customer linking, not the editable profile phone", async () => {

@@ -182,7 +182,7 @@ async function SignupPageContent({ searchParams }: SignupPageProps) {
 
   return (
     <main className="flex min-h-full flex-col px-3 py-3">
-      <section className="flex min-h-full flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-5 pb-6 pt-4">
+      <section className="auth-panel flex min-h-full flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-5 pb-6 pt-4">
         <Link
           aria-label="Back to home"
           className="flex h-11 w-11 items-center text-foreground transition-opacity hover:opacity-80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal"
