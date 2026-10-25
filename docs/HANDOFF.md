@@ -374,3 +374,22 @@ finding was reported in that pass. The older PIN thread was resolved after check
 current messages/keypad regressions. Code/test/runtime inputs remain unchanged, so
 192passing tests and25HTTP checks are reused; the documentation commit's CI is
 PENDING at writing and its final result belongs in the task report/PR Checks.
+
+
+## Delivery divergence merge — 2026-10-25
+
+Merged supplied remote head `ea2aa546c97c5d1822369874b7ad485bb56919cf` into
+`coderabbit/scan-tabup-repository/3d6619a0`, starting at `235631a`. The remote
+tree exactly matches earlier task commit `3b35445`; both histories are retained.
+Six conflicts were resolved with the later task versions: CI workflow, owner
+payment component, sales actions, buying-power parity tests, owner action tests
+and owner UI tests. Ledger merged unchanged. The resulting code/config/test tree
+is identical to the starting task tree, preserving post-lock cash expiry,
+customer-reference locking, safe expiry errors, same-shop action outcomes,
+pagination, ledger receipt dates and all remote payment/PIN work.
+
+Prior source verification is reused on identical inputs: 192 tests passed with
+zero failures/skips, plus lint, types, production build and security checks.
+Merge-specific whitespace, conflict-marker, history-secret and ancestry checks
+are recorded in workspace validation context. This is a local merge only; no push,
+PR merge, hosted SQL or deployment is authorized by the divergence repair.
