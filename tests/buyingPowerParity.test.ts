@@ -30,6 +30,8 @@ describe.skipIf(!container)("PostgreSQL buying-power parity and existing approva
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon; END IF;
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated; END IF;
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='service_role') THEN CREATE ROLE service_role; END IF;
+        -- WHY: Another isolated database suite may create these cluster roles concurrently in CI.
+        EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL;
       END $$;
       CREATE SCHEMA auth;
       CREATE TABLE auth.users (id uuid PRIMARY KEY, phone text, phone_confirmed_at timestamptz);
@@ -46,6 +48,16 @@ describe.skipIf(!container)("PostgreSQL buying-power parity and existing approva
         RETURN jsonb_build_object('score', score, 'limitCents', calculated_limit);
       END $$;
     `);
+  });
+
+  it("reapplies and transactionally rehearses the floor migration without changing its installed definition", () => {
+    const definition = "SELECT pg_get_functiondef('public.approve_tab_atomic(uuid,uuid,uuid,uuid,text,boolean,boolean)'::regprocedure)";
+    const before = sql(definition);
+    const migration = readFileSync("supabase/migrations/202610250001_align_buying_power_floor.sql", "utf8");
+    sql(migration);
+    expect(sql(definition)).toBe(before);
+    sql(`BEGIN; ${migration} ROLLBACK;`);
+    expect(sql(definition)).toBe(before);
   });
 
   function fixture(history: BuyingPowerHistory, totalCents = 1) {

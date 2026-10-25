@@ -5,6 +5,7 @@ import { connection } from "next/server";
 import { Suspense } from "react";
 import { z } from "zod";
 import { LimitMeter } from "@/components/LimitMeter";
+import { CustomerAccountActivity } from "@/components/CustomerAccountActivity";
 import { WhyLimit } from "@/components/WhyLimit";
 import { calculateBuyingPower, explainLimit, type BuyingPowerHistory } from "@/lib/buyingPower";
 import { likelyToNeedTab } from "@/lib/forecast";
@@ -70,6 +71,7 @@ function logFailure(step: string, error: unknown, fallbackMessage = "Response fa
 }
 
 type BuyingPowerCardData = {
+  history: BuyingPowerHistory;
   id: string;
   shopName: string;
   lenderSharingConsent: boolean;
@@ -175,6 +177,7 @@ function ShopBuyingPower({ card }: { card: BuyingPowerCardData }) {
         nextLimitCents={card.nextLimitCents}
       />
       <WhyLimit reasons={card.reasons} />
+      <CustomerAccountActivity history={card.history} />
       <div className="mt-5 border-t border-white/10 pt-4">
         <p className="text-xs leading-relaxed text-foreground/70">
           Allow the demo lender API to receive this shop&apos;s buying-power amount and explanation.
@@ -374,6 +377,7 @@ async function BuyingPowerContent() {
     };
     const buyingPower = calculateBuyingPower(history, now);
     cards.push({
+      history,
       id: link.id,
       shopName,
       lenderSharingConsent: link.lender_sharing_consent_at !== null,

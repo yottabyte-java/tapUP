@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
@@ -688,6 +689,43 @@ localSuite("local Supabase red-team integration", () => {
     expect(finalSale.data?.used_at).toBeTruthy();
   });
 
+  it.each([false, true])("confirms cash once through PostgREST (split=%s)", async (split) => {
+    if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
+    const saleId = await createSale({ shopId: fixture.shops.a, customerId: fixture.customers.a,
+      totalCents: 7500, qrTokenHash: randomBytes(32).toString("hex") });
+    await ensureNoError(await admin.from("sales").update({
+      method: split ? "tab" : "cash", status: split ? "tab_requested" : "pending",
+      paid_now_cents: split ? 2500 : 7500, tab_cents: split ? 5000 : 0,
+      paid_now_method: "cash", used_at: new Date().toISOString(),
+    }).eq("id", saleId));
+    const confirm = () => admin!.from("sales").update({ paid_now_confirmed_at: new Date().toISOString(),
+      ...(split ? {} : { status: "paid" }) }).eq("id", saleId).is("paid_now_confirmed_at", null).select("id");
+    const results = await Promise.all([confirm(), confirm()]);
+    expect(results.every((r) => r.error === null)).toBe(true);
+    expect(results.reduce((n, r) => n + (r.data?.length ?? 0), 0)).toBe(1);
+    const receipt = await admin.from("sales").select("status, paid_now_confirmed_at").eq("id", saleId).single();
+    expect(receipt.data?.status).toBe(split ? "tab_requested" : "paid");
+    expect(receipt.data?.paid_now_confirmed_at).toBeTruthy();
+  });
+
+  it.each([false, true])("rejects expired cash through PostgREST without a receipt (split=%s)", async (split) => {
+    if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
+    const expiresAt = new Date(Date.now() + 3000);
+    const saleId = await createSale({ shopId: fixture.shops.a, customerId: fixture.customers.a,
+      totalCents: 7500, qrTokenHash: randomBytes(32).toString("hex"), expiresAt });
+    const status = split ? "tab_requested" : "pending";
+    await ensureNoError(await admin.from("sales").update({ method: split ? "tab" : "cash", status,
+      paid_now_cents: split ? 2500 : 7500, tab_cents: split ? 5000 : 0,
+      paid_now_method: "cash", used_at: new Date().toISOString(),
+    }).eq("id", saleId));
+    await delay(Math.max(0, expiresAt.getTime() - Date.now()) + 100);
+    const result = await admin.from("sales").update({ paid_now_confirmed_at: new Date().toISOString(),
+      ...(split ? {} : { status: "paid" }) }).eq("id", saleId);
+    expect(result.error?.message).toBe("Cash request has expired");
+    const receipt = await admin.from("sales").select("status, paid_now_confirmed_at").eq("id", saleId).single();
+    expect(receipt.data).toEqual({ status, paid_now_confirmed_at: null });
+  }, 10000);
+
   it("atomically approves a valid PIN and rejects duplicate approval requests", async () => {
     if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
     await createCompletedPurchase(fixture.customers.pin);
@@ -748,6 +786,18 @@ localSuite("local Supabase red-team integration", () => {
     expect(persisted.data).toMatchObject({ failed_pin_attempts: 5, credit_limit_cents: 10_000 });
     expect(persisted.data?.locked_until).toBeTruthy();
     expect(sale.data?.status).toBe("pending");
+    expect((await approveAtomic({ saleId, customerId, shopId: fixture.shops.a,
+      ownerId: fixture.users.ownerA.id, pin: "0427" })).data).toMatchObject({ ok: false, error: "pin_locked" });
+    // WHY: Only this synthetic customer's clock is advanced; production lockouts are never bypassed.
+    await createCompletedPurchase(customerId);
+    await createCompletedPurchase(customerId);
+    await ensureNoError(await admin.from("shop_customers").update({
+      locked_until: new Date(Date.now() - 1000).toISOString(),
+    }).eq("id", customerId));
+    expect((await approveAtomic({ saleId, customerId, shopId: fixture.shops.a,
+      ownerId: fixture.users.ownerA.id, pin: "0427" })).data).toMatchObject({ ok: true });
+    const recovered = await admin.from("shop_customers").select("failed_pin_attempts, locked_until").eq("id", customerId).single();
+    expect(recovered.data).toEqual({ failed_pin_attempts: 0, locked_until: null });
   });
 
   it("rolls back the cache update, PIN reset, and both sale transitions after an injected database failure", async () => {

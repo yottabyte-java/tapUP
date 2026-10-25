@@ -6,6 +6,7 @@ import { z } from "zod";
 import { LedgerDashboard, type LedgerData } from "@/components/CustomerRow";
 import { createClient } from "@/lib/supabase/server";
 import { calculateTodayTakings } from "@/lib/ledger";
+import { calculateBuyingPower } from "@/lib/buyingPower";
 
 const profileSchema = z.object({
   role: z.enum(["shop_owner", "customer"]),
@@ -33,6 +34,7 @@ const saleSchema = z.object({
   method: z.enum(["tab", "demo_card", "cash", "pending"]),
   status: z.enum(["pending", "tab_requested", "approved", "paid", "repaid", "expired", "cancelled"]),
   paid_now_cents: z.number().int().nonnegative(),
+  paid_now_method: z.enum(["cash", "demo_card"]).nullable(),
   paid_now_confirmed_at: z.string().nullable(),
   tab_cents: z.number().int().nonnegative(),
   created_at: z.string().datetime({ offset: true }),
@@ -60,7 +62,7 @@ async function loadAllSales(
   for (let offset = 0; ; offset += PAGE_SIZE) {
     const { data, error } = await supabase
       .from("sales")
-      .select("id, shop_customer_id, total_cents, method, status, paid_now_cents, paid_now_confirmed_at, tab_cents, created_at, due_at")
+      .select("id, shop_customer_id, total_cents, method, status, paid_now_cents, paid_now_method, paid_now_confirmed_at, tab_cents, created_at, due_at")
       .eq("shop_id", shopId)
       .order("created_at", { ascending: false })
       .range(offset, offset + PAGE_SIZE - 1);
@@ -237,7 +239,17 @@ async function LedgerContent() {
       id: customer.id,
       displayName: customer.display_name,
       phone: customer.customer_phone,
-      limitCents: customer.credit_limit_cents,
+      // WHY: The cached limit is only updated by some mutations; display the same history-based rule as /me and approval.
+      limitCents: calculateBuyingPower({
+        sales: sales.filter((sale) => sale.shop_customer_id === customer.id).map((sale) => ({
+          id: sale.id, createdAt: sale.created_at, totalCents: sale.total_cents, method: sale.method,
+          status: sale.status, tabCents: sale.tab_cents, paidNowCents: sale.paid_now_cents,
+          paidNowMethod: sale.paid_now_method, dueAt: sale.due_at,
+        })),
+        repayments: (repaymentsByCustomer.get(customer.id) ?? []).map((payment) => ({
+          saleId: payment.sale_id, amountCents: payment.amount_cents, paidAt: payment.paid_at, onTime: payment.on_time,
+        })),
+      }, now).limitCents,
       owedCents: owedByCustomer.get(customer.id) ?? 0,
       late,
       outstandingSales,

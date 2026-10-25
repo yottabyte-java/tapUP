@@ -5,7 +5,7 @@ import { PaymentControls, type PendingPayment } from "@/components/OwnerPayments
 import { approveTab, payCash, rejectTab } from "@/lib/actions/sales";
 
 const { state } = vi.hoisted(() => ({ state: {
-  signedIn: true, role: "shop_owner", fail: false, race: false, delayCustomer: false,
+  signedIn: true, role: "shop_owner", fail: false, race: false, delayCustomer: false, expiredAtWrite: false,
   sale: {} as Record<string, unknown>,
   rpc: vi.fn(), admin: vi.fn(),
 } }));
@@ -40,6 +40,7 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => { state.admin(
             pin_hash: null, failed_pin_attempts: 0, locked_until: null, credit_limit_cents: 5000,
           }, error: null };
         }
+        if (update && state.expiredAtWrite) return { data: null, error: { code: "P0001", message: "Cash request has expired" } };
         if (update && state.race) state.sale = { ...state.sale, shop_customer_id: "other-customer", method: "cash", used_at: "chosen" };
         const matches = filters.every(([key, value]) => state.sale[key] === value)
           && after.every(([key, value]) => typeof state.sale[key] === "string" && Date.parse(state.sale[key] as string) > Date.parse(value));
@@ -55,7 +56,7 @@ const SALE = "00000000-0000-4000-8000-000000000001";
 const CUSTOMER = "00000000-0000-4000-8000-000000000002";
 beforeEach(() => {
   state.signedIn = true; state.role = "shop_owner"; state.fail = false; state.race = false;
-  state.delayCustomer = false;
+  state.delayCustomer = false; state.expiredAtWrite = false;
   state.admin.mockClear();
   state.rpc.mockReset().mockResolvedValue({ data: { ok: true, saleId: SALE, dueAt: "2026-11-08T00:00:00Z", limitCents: 5000 }, error: null });
   state.sale = { id: SALE, shop_id: "shop", shop_customer_id: CUSTOMER, total_cents: 7500,
@@ -124,6 +125,12 @@ describe("owner payment actions", () => {
     expect(await payCash({ saleId: SALE, shopCustomerId: CUSTOMER })).toEqual({ ok: false, error: "cash_confirmation_failed" });
     expect(state.sale.paid_now_confirmed_at).toBeNull();
     expect(state.sale.status).toBe(status);
+  });
+  it.each(["pending", "tab_requested"])("reports authoritative lock-wait expiry for %s cash", async (status) => {
+    if (status === "pending") Object.assign(state.sale, { status, method: "cash", paid_now_cents: 7500, tab_cents: 0 });
+    state.expiredAtWrite = true;
+    expect(await payCash({ saleId: SALE })).toEqual({ ok: false, error: "sale_expired" });
+    expect(state.sale.paid_now_confirmed_at).toBeNull();
   });
   it("records a full pending cash payment once", async () => {
     Object.assign(state.sale, { status: "pending", method: "cash", paid_now_cents: 7500, tab_cents: 0 });

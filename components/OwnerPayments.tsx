@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { PinPad } from "@/components/PinPad";
 import { approveTab, payCash, rejectTab } from "@/lib/actions/sales";
 import { formatRand } from "@/lib/money";
-import { loadOwnerPaymentPage, ownerPaymentError, type PendingPayment, type PaymentCursor, type PaymentCustomer } from "@/lib/ownerPayments";
+import { loadOwnerPaymentPage, loadOwnerSaleState, ownerPaymentError, type PendingPayment, type PaymentCursor, type PaymentCustomer } from "@/lib/ownerPayments";
 export type { PendingPayment } from "@/lib/ownerPayments";
 
 type Result = { ok: true } | { ok: false; error: string };
@@ -46,6 +46,7 @@ type OwnerPaymentsProps = {
   shopId: string;
   refreshKey: string;
   onCompleted: (saleId: string) => void;
+  activeSaleId?: string;
 };
 
 /** Reset request pages, feedback and PIN state whenever the active shop changes. */
@@ -53,7 +54,7 @@ export function OwnerPayments(props: OwnerPaymentsProps) {
   return <OwnerPaymentRequests key={props.shopId} {...props} />;
 }
 
-function OwnerPaymentRequests({ shopId, refreshKey, onCompleted }: OwnerPaymentsProps) {
+function OwnerPaymentRequests({ shopId, refreshKey, onCompleted, activeSaleId }: OwnerPaymentsProps) {
   const [sales, setSales] = useState<PendingPayment[]>([]);
   const [customers, setCustomers] = useState<PaymentCustomer[]>([]);
   const [cursor, setCursor] = useState<PaymentCursor | null>(null);
@@ -63,23 +64,41 @@ function OwnerPaymentRequests({ shopId, refreshKey, onCompleted }: OwnerPayments
   const [busy, startTransition] = useTransition();
   const submitting = useRef(false);
   const generation = useRef(0);
+  const mounted = useRef(false);
+  const completedSale = useRef<string | null>(null);
+  const completedCallback = useRef(onCompleted);
+  useEffect(() => { completedCallback.current = onCompleted; }, [onCompleted]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; generation.current += 1; };
+  }, []);
   const load = useCallback(async (pageCursor: PaymentCursor | null = null) => {
     const request = ++generation.current;
-    const page = await loadOwnerPaymentPage(shopId, pageCursor);
+    const [page, active] = await Promise.all([
+      loadOwnerPaymentPage(shopId, pageCursor),
+      activeSaleId ? loadOwnerSaleState(shopId, activeSaleId) : null,
+    ]);
     // A refresh or shop change may finish before an older read; never restore its stale page.
-    if (request !== generation.current) return;
+    if (!mounted.current || request !== generation.current) return;
     setSales(page.sales);
     setCustomers(page.customers);
     setCursor(pageCursor);
     setNextCursor(page.nextCursor);
-  }, [shopId]);
+    // WHY: A customer's successful demo payment leaves the pending list; absence alone is not proof of payment.
+    if (active && ["paid", "approved", "repaid", "cancelled"].includes(active.status) && completedSale.current !== active.id) {
+      completedSale.current = active.id;
+      setMessage(active.status === "paid" ? "Payment received." : active.status === "cancelled"
+        ? "Sale cancelled. Any confirmed receipt remains recorded." : "Tab approved.");
+      completedCallback.current(active.id);
+    }
+  }, [shopId, activeSaleId]);
 
   useEffect(() => {
     let active = true;
     startTransition(async () => {
       try { await load(); } catch { if (active) setError("Could not load payment requests. Refresh to try again."); }
     });
-    return () => { active = false; generation.current += 1; };
+    return () => { active = false; };
   }, [load, refreshKey]);
 
   function refresh(pageCursor: PaymentCursor | null = null) {
@@ -92,28 +111,31 @@ function OwnerPaymentRequests({ shopId, refreshKey, onCompleted }: OwnerPayments
   async function act(sale: PendingPayment, action: "approve" | "reject" | "cash", pin?: string): Promise<Result> {
     // WHY: The ref closes the gap before React renders disabled buttons; server CAS/RPC checks handle other tabs/devices.
     if (submitting.current) return { ok: false, error: "action_in_progress" };
-    const actionGeneration = generation.current;
     submitting.current = true;
     setError(""); setMessage("");
     try {
       const result = action === "cash" ? await payCash({ saleId: sale.id })
         : action === "reject" ? await rejectTab({ saleId: sale.id })
         : await approveTab({ saleId: sale.id, shopCustomerId: sale.shop_customer_id, ...(pin ? { pin } : {}) });
-      // A shop change/unmount or newer read invalidates this action's displayed result and refresh.
-      if (actionGeneration !== generation.current) return result;
+      // WHY: Reads may supersede each other, but a same-shop refresh cannot cancel an action's outcome.
+      // The shop-keyed component unmount still prevents results leaking into another shop.
+      if (!mounted.current) return result;
       if (!result.ok) {
         // The mounted keypad clears a mismatch as soon as the customer edits their PIN.
         if (result.error !== "invalid_pin") setError(ownerPaymentError(result.error));
         return result;
       }
       setMessage(action === "cash" ? "Cash receipt recorded." : action === "reject" ? "Tab rejected. Any confirmed receipt remains recorded." : "Tab approved.");
-      if (action !== "cash" || sale.status === "pending") onCompleted(sale.id);
-      if (actionGeneration === generation.current) {
-        try { await load(cursor); } catch { setError("Action succeeded, but requests could not refresh. Refresh before continuing."); }
+      if (action !== "cash" || sale.status === "pending") {
+        completedSale.current = sale.id;
+        onCompleted(sale.id);
+      }
+      if (mounted.current) {
+        try { await load(cursor); } catch { if (mounted.current) setError("Action succeeded, but requests could not refresh. Refresh before continuing."); }
       }
       return { ok: true };
     } catch {
-      if (actionGeneration === generation.current) setError("Connection failed. Refresh requests to check whether the action completed before trying again.");
+      if (mounted.current) setError("Connection failed. Refresh requests to check whether the action completed before trying again.");
       return { ok: false, error: "unavailable" };
     } finally { submitting.current = false; }
   }

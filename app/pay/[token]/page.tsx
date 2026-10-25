@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { connection } from "next/server";
 import {
   getCustomerPayConsentState,
   linkWithConsent,
@@ -192,6 +193,8 @@ function PaymentError({ token }: { token: string }) {
 }
 
 async function CustomerPayContent({ params, searchParams }: PageProps) {
+  // WHY: Auth and expiry use the current clock; they must not execute during cached prerendering.
+  await connection();
   const [{ token }, query] = await Promise.all([params, searchParams]);
   const result = await getCustomerPayDetails(token);
 

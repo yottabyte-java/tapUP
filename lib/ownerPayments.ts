@@ -17,6 +17,14 @@ export type PaymentCustomer = { id: string; display_name: string; customer_profi
 export type PaymentCursor = Pick<PendingPayment, "created_at" | "id">;
 const PAGE_SIZE = 100;
 
+/** Read the active QR's persisted state even after it leaves the pending request list. */
+export async function loadOwnerSaleState(shopId: string, saleId: string) {
+  const { data, error } = await createClient().from("sales").select("id, status")
+    .eq("shop_id", shopId).eq("id", saleId).maybeSingle();
+  if (error || !data) throw new Error("sale_state_unavailable");
+  return data;
+}
+
 /**
  * Read one owner request page through the session client and RLS. A timestamp/ID cursor
  * keeps equally dated requests reachable when newer sales arrive or prior rows are settled.

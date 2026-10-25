@@ -386,7 +386,7 @@ export default function ShopSellPage() {
         </section>
       )}
 
-      <OwnerPayments shopId={shopId} refreshKey={`${activeSale?.saleId ?? ""}:${customersToConfirm.length}`}
+      <OwnerPayments shopId={shopId} activeSaleId={activeSale?.saleId} refreshKey={`${activeSale?.saleId ?? ""}:${customersToConfirm.length}`}
         onCompleted={(saleId) => {
           if (activeSale?.saleId === saleId) {
             setActiveSale(null);
@@ -409,7 +409,10 @@ export default function ShopSellPage() {
               <div className="mt-5 rounded-xl bg-white p-3">
                 <QRCodeSVG
                   aria-label="QR code for customer payment"
-                  size={208}
+                  // WHY: The QR standard's four-module quiet zone keeps its finder patterns clear.
+                  marginSize={4}
+                  level="M"
+                  size={246}
                   value={activeSale.paymentUrl}
                 />
               </div>

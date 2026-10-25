@@ -138,6 +138,8 @@ describe("owner payment interactions", () => {
     const pending = deferred<{ ok: true }>();
     reject.mockReturnValueOnce(pending.promise);
     const button = screen.getByRole("button", { name: "Reject tab" });
+    // WHY: Page text can render before React finishes the loading transition and enables actions.
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(button); fireEvent.click(button);
     expect(reject).toHaveBeenCalledExactlyOnceWith({ saleId: "older" });
     await act(async () => pending.resolve({ ok: true }));
@@ -152,15 +154,49 @@ describe("owner payment interactions", () => {
     const page = { ...older, sales: [split], customers: [{ ...customer, customer_profile_id: "linked" }] };
     loadPage.mockResolvedValueOnce(page).mockResolvedValueOnce({ ...page, sales: [{ ...split, paid_now_confirmed_at: sale.created_at }] });
     fireEvent.click(screen.getByRole("button", { name: "Older requests" }));
-    await screen.findByRole("button", { name: /Confirm cash received/ });
+    const cashButton = await screen.findByRole("button", { name: /Confirm cash received/ });
+    // WHY: The button exists before the page-loading transition has enabled payment actions.
+    await waitFor(() => expect((cashButton as HTMLButtonElement).disabled).toBe(false));
     expect((screen.getByRole("button", { name: "Approve tab" }) as HTMLButtonElement).disabled).toBe(true);
     cash.mockResolvedValueOnce({ ok: true });
-    fireEvent.click(screen.getByRole("button", { name: /Confirm cash received/ }));
+    fireEvent.click(cashButton);
     await screen.findByText("Cash receipt recorded.");
     expect(cash).toHaveBeenCalledExactlyOnceWith({ saleId: "older" });
     await waitFor(() => expect((screen.getByRole("button", { name: "Approve tab" }) as HTMLButtonElement).disabled).toBe(false));
     expect(loadPage).toHaveBeenLastCalledWith("shop-a", boundary);
     expect(completed).not.toHaveBeenCalled();
+  });
+
+  it.each(["success", "expired", "network"])("keeps the action outcome during a same-shop refresh: %s", async (outcome) => {
+    const view = render(<OwnerPayments shopId="shop-a" refreshKey="key" onCompleted={completed} />);
+    await waitFor(() => expect((screen.getByRole("button", { name: "Reject tab" }) as HTMLButtonElement).disabled).toBe(false));
+    const action = deferred<{ ok: boolean; error?: string }>();
+    reject.mockReturnValueOnce(action.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Reject tab" }));
+    const read = deferred<typeof first>();
+    loadPage.mockReturnValueOnce(read.promise);
+    view.rerender(<OwnerPayments shopId="shop-a" refreshKey="identity-confirmed" onCompleted={completed} />);
+    fireEvent.click(screen.getByRole("button", { name: "Reject tab" }));
+    expect(reject).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      if (outcome === "network") action.reject(new Error("offline"));
+      else action.resolve(outcome === "success" ? { ok: true } : { ok: false, error: "sale_expired" });
+    });
+    // The old refresh completes last; it must not erase the authoritative action outcome.
+    await act(async () => read.resolve(first));
+    if (outcome === "success") {
+      await screen.findByText(/Tab rejected/);
+      expect(completed).toHaveBeenCalledExactlyOnceWith("sale");
+    } else {
+      await screen.findByText(outcome === "expired" ? /This sale has expired/ : /Connection failed/);
+      expect(screen.queryByText(/Tab rejected|Tab approved|Cash receipt recorded/)).toBeNull();
+      expect(completed).not.toHaveBeenCalled();
+      reject.mockResolvedValueOnce({ ok: true });
+      await waitFor(() => expect((screen.getByRole("button", { name: "Reject tab" }) as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(screen.getByRole("button", { name: "Reject tab" }));
+      await screen.findByText(/Tab rejected/);
+      expect(completed).toHaveBeenCalledExactlyOnceWith("sale");
+    }
   });
 
   it("ignores a stale response after the active shop changes", async () => {
