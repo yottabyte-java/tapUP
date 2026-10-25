@@ -138,6 +138,8 @@ describe("owner payment interactions", () => {
     const pending = deferred<{ ok: true }>();
     reject.mockReturnValueOnce(pending.promise);
     const button = screen.getByRole("button", { name: "Reject tab" });
+    // WHY: Page text can render before React finishes the loading transition and enables actions.
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(button); fireEvent.click(button);
     expect(reject).toHaveBeenCalledExactlyOnceWith({ saleId: "older" });
     await act(async () => pending.resolve({ ok: true }));
