@@ -700,8 +700,10 @@ BEGIN
     WHEN score >= 10 THEN 5000 ELSE 0 END;
   IF completed_count = 0 THEN calculated_limit := 0;
   ELSIF completed_count = 1 THEN calculated_limit := 5000;
-  ELSIF late_count >= 2 THEN calculated_limit := LEAST(calculated_limit, 5000);
+  ELSE calculated_limit := GREATEST(calculated_limit, 5000);
   END IF;
+  -- WHY: Match the TypeScript starter floor even when late penalties reduce the score below 10.
+  IF late_count >= 2 THEN calculated_limit := LEAST(calculated_limit, 5000); END IF;
 
   IF EXISTS (
     SELECT 1 FROM public.sales AS s

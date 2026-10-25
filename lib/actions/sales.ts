@@ -728,6 +728,29 @@ export async function approveTab(input: unknown): Promise<
   };
 }
 
+const rejectTabSchema = z.object({ saleId: z.string().uuid() }).strict();
+
+export async function rejectTab(input: unknown): Promise<
+  ActionFailure | ActionSuccess<{ saleId: string; status: "cancelled" }>
+> {
+  const parsed = rejectTabSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "invalid_input" };
+  const owner = await getOwnerContext();
+  if (!owner.ok) return owner;
+
+  // WHY: Cancellation already exists in the state trigger. The conditional update wins once,
+  // cannot cancel an approved tab, and retains any confirmed upfront receipt for the ledger.
+  const { data, error } = await owner.admin.from("sales")
+    .update({ status: "cancelled" })
+    .eq("id", parsed.data.saleId)
+    .eq("shop_id", owner.shopId)
+    .eq("status", "tab_requested")
+    .select("id").maybeSingle();
+  if (error) return { ok: false, error: "tab_rejection_failed" };
+  if (!data) return { ok: false, error: "sale_not_rejectable" };
+  return { ok: true, saleId: data.id, status: "cancelled" };
+}
+
 export async function payCash(input: unknown): Promise<
   ActionFailure | ActionSuccess<{ saleId: string; status: "paid" | "tab_requested" }>
 > {
@@ -800,7 +823,7 @@ export async function payCash(input: unknown): Promise<
     return { ok: false, error: "sale_not_payable_by_cash" };
   }
 
-  const { data, error } = await owner.admin
+  let payment = owner.admin
     .from("sales")
     .update({
       shop_customer_id: customerId,
@@ -814,8 +837,14 @@ export async function payCash(input: unknown): Promise<
     .eq("id", sale.id)
     .eq("shop_id", owner.shopId)
     .eq("status", "pending")
-    .select("id")
-    .maybeSingle();
+    .eq("method", sale.method)
+    .is("paid_now_confirmed_at", null);
+  // WHY: A concurrent customer choice must not be overwritten using the owner's stale read.
+  payment = sale.shopCustomerId === null
+    ? payment.is("shop_customer_id", null) : payment.eq("shop_customer_id", sale.shopCustomerId);
+  payment = sale.usedAt === null ? payment.is("used_at", null) : payment.eq("used_at", sale.usedAt);
+  if (sale.expiresAt !== null) payment = payment.gt("expires_at", new Date().toISOString());
+  const { data, error } = await payment.select("id").maybeSingle();
   if (error || !data) return { ok: false, error: "cash_confirmation_failed" };
   return { ok: true, saleId: sale.id, status: "paid" };
 }
