@@ -27,6 +27,11 @@ function applySecurityHeaders(response: NextResponse): NextResponse {
   if (process.env.NODE_ENV === "development") {
     connectSources.push("ws:");
   }
+  const scriptSources = ["'self'", "'unsafe-inline'"];
+  // WHY: React's development error tooling uses eval(); this directive is intentionally absent in production.
+  if (process.env.NODE_ENV === "development") {
+    scriptSources.push("'unsafe-eval'");
+  }
 
   // WHY: CSP limits executable, connectable, and embeddable content; Supabase is the only external app endpoint.
   // WHY: 'unsafe-inline' is needed for Next.js streamed hydration and Tailwind's generated inline styles.
@@ -36,7 +41,7 @@ function applySecurityHeaders(response: NextResponse): NextResponse {
     "font-src 'self' data:",
     "img-src 'self' data: blob:",
     "media-src 'self' blob:",
-    "script-src 'self' 'unsafe-inline'",
+    `script-src ${scriptSources.join(" ")}`,
     "style-src 'self' 'unsafe-inline'",
     "object-src 'none'",
     "base-uri 'self'",
