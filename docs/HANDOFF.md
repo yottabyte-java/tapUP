@@ -245,3 +245,115 @@ Repository root, Node 24.21.0/npm 11.19.0, unchanged lockfile:
   staging rehearsal and separate production approval. Seed deletes demo-shop data.
 - Before merging, read the final PR checks on its current commit. Earlier green
   runs alone do not prove the final patch; the final task response records that run.
+
+## Master hardening — current verification, 2026-10-25
+
+This section supersedes the prior cash/UI blockers and skipped-integration status.
+Starting head `2228ad8a1abeadd5cb32a34ebb52993b675066c3`; PR #2 remains on
+`review/coderabbit-final-fixes` → `main`. No merge/hosted SQL/deployment/settings change.
+
+### Repairs
+
+- Cash: the existing BEFORE UPDATE trigger now checks `clock_timestamp()` after
+  sale/customer locks, including already-used QR requests, and stamps the receipt
+  with that database time. A raised expiry error rolls back the complete write.
+  Existing state/consent/tender/ownership/CAS guards remain. `payCash` maps only the
+  known trigger expiry error to `sale_expired`; no SQL details reach the user.
+- `202610250002_guard_cash_confirmation_expiry.sql` supplies the same replacement
+  trigger function for existing installations. Migration001 changes only buying
+  power; both are already in fresh `schema.sql`, are repeatable and need separate
+  approved hosted deployment. Tests compare installed definitions and rehearse rollback.
+- UI: request-generation guards still discard stale reads; an independent mounted
+  guard preserves same-shop action outcomes across refreshes. The shop-keyed
+  component still discards old-shop results. Submission ref and server protections
+  remain. Tests cover success, expiry/network failures, retries, duplicate clicks,
+  callback exactly once, and stale-shop behavior.
+- Gitleaks now scans merge diffs against the first parent as well as all refs;
+  a temporary merge-only synthetic secret verifies detection. No real secret used.
+- CI adds **integration** beside **verify** and **security**, using real local
+  Supabase Auth/PostgREST and generated private local keys. Require all three checks.
+  `verify` explicitly labels its integration skips; the integration job runs them.
+  No production credential or automatic deployment/migration job exists.
+- All 15 license advisories reviewed in `docs/LICENSE_REVIEW.md`: transitive Sharp/
+  libvips platform binaries and Caniuse data. Preserve notices; distribution-specific
+  obligations still need review. No dependency upgrades or invented legal clearance.
+
+### Executed evidence
+
+Node24.21.0/npm11.19.0; unchanged lockfile. Commands from repository root:
+
+- `npm ci --no-audit --no-fund`: exit0 (existing unrs-resolver script warning).
+- `npm run lint`; `npx next typegen && npx tsc --noEmit`: exit0.
+- Full `npm test` with both guarded local Supabase and isolated PostgreSQL configured:
+  **191 passed, 0 failed, 0 skipped**: 114 unit/action/query/render tests,
+  21 interactive UI tests, 40 PostgreSQL tests, 16 real Supabase integration tests.
+- `bash scripts/check-local-supabase.sh`: exit0,16/16. The original12 first passed;
+  four PostgREST cash cases were then added, and PIN recovery assertions extended.
+- `tests/cashExpiryPostgres.test.ts`:11 real DB tests, including repeated full/split
+  sale-lock waits, split customer-lock wait, unchanged snapshots on rejection,
+  authoritative receipt time, duplicate/concurrent confirmations and migration parity.
+- `NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321 NEXT_PUBLIC_SUPABASE_ANON_KEY=ci-placeholder npm run build`:
+  exit0. Also rebuilt with actual private local CLI-generated runtime configuration.
+- Built app: safe missing-key503/no-store verified; with real local Supabase, actual
+  health200/no-store verified.25 HTTP checks exercised real owner/customer sessions,
+  server-action authorization, customer cash/tab requests, full/split receipts,
+  approval/rejection and replay. Synthetic fixture setup bypassed email/phone proof;
+  this is NOT a browser/OTP/deployed HTTPS pass. Fixtures were cleaned up individually.
+- `npm audit --audit-level=moderate`: exit0,0 vulnerabilities.
+- `gitleaks git --redact=100 --no-banner --log-opts="--all --diff-merges=first-parent" .`:
+  exit0,no leaks in scanned history; staged/final CI checks cover subsequent commits.
+- `bash scripts/check-secret-scanner.sh`: exit0,merge-only synthetic finding detected.
+- `bash scripts/check-security-rules.sh`: exit0,4positive controls plus negative control.
+- `semgrep scan --config .semgrep/security.yml --error --metrics=off --disable-version-check app components lib proxy.ts next.config.ts`:
+  exit0,4rules/54files/0application findings.
+- `node scripts/license-inventory.mjs`: exit0,68entries/15reviewed advisories.
+
+Failures retained: first UI run45passed/2failed because a new assertion selected the
+PIN accessibility status; fixed the test selector, then47/47 passed. First Supabase
+startup failed due missing Docker host-gateway mapping; task-local daemon repaired.
+First HTTP smoke fixture assumed too small a limit; diagnostic confirmed legitimate
+full affordability. A sale above the R300 cap corrected the fixture and all25 passed.
+No application assertion or security rule was weakened to get green results.
+
+### Local environment and remaining gates
+
+SupabaseCLI2.122.0 is installed outside the repo, official archive checksum verified.
+The copied project config excludes automatic app migrations and seed. A confirmed
+blank local database received schema/RLS/both migrations in one transaction. Its
+Auth/PostgREST stack is real, not an emulator; keys are private runtime files.
+The task-local bridge-none Docker daemon needed explicit host-gateway IP. Reuse
+`docs/DEPLOYMENT.md` commands; never use production credentials in the test runner.
+
+Current deployment status: **local verification complete**. Hosted preview/project
+access, real email/OTP confirmation, full browser workflow and HTTPS remain manual
+release gates. The original cash race and UI callback defect are fixed locally.
+A multi-instance production deployment still needs assessment of the documented
+in-memory rate limiter; persisted PIN lockout remains enforced in the database.
+
+CodeRabbit published a Minor Gitleaks merge-diff finding after the prior report;
+it is addressed here with a positive control. Recheck the final PR head's review
+and all three Actions jobs before merge; the task response records their results.
+No hosted migration was applied. Preserve `.idea/` and PIN compatibility SQL.
+
+### End-to-end evidence checklist
+
+| Item | Status / scope |
+|---|---|
+| HTTPS deployment | BLOCKED: no authorized hosted preview |
+| Owner authentication | PASSED: real local Auth session and built HTTP owner page |
+| Customer authentication | PASSED: real local Auth session and built HTTP customer page |
+| Auth-to-record links | PASSED: local synthetic profiles/shops and guarded consent-link RPC |
+| Redirects, email/OTP proof | PARTIAL: unauthorized redirect tested; real email/OTP not run |
+| Owner request controls | PASSED: UI regressions plus actual authenticated payment HTTP actions |
+| Customer authorization | PASSED: local RLS and actual server-action role checks |
+| Full/split expired cash | PASSED: PostgreSQL and real PostgREST |
+| Lock-wait expiry | PASSED: repeated sale waits and split customer wait |
+| PIN lockout/recovery | PASSED: local persisted RPC state; recovery uses synthetic clock advance |
+| Buying-power parity | PASSED: real SQL/TypeScript cases |
+| Ledger/daily receipts | PASSED: deterministic receipt-date tests and database rollback snapshots |
+| Duplicate settlement | PASSED: concurrent DB/PostgREST and HTTP replay checks |
+| RLS/server authorization | PASSED: authenticated local negative/positive controls |
+| Health | PASSED: built HTTP200 with local DB and generic503 without config |
+| Final GitHub checks | Read final commit's verify/security/integration; final response records result |
+| Deployment commit | NOT RUN: no deployment exists |
+| Secret-free logs | Checked redacted scanner outputs; keep local status/credential files private |

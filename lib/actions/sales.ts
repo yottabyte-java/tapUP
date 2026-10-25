@@ -803,10 +803,15 @@ export async function payCash(input: unknown): Promise<
       .eq("shop_id", owner.shopId)
       .eq("status", "tab_requested")
       .is("paid_now_confirmed_at", null);
-    // Recheck expiry after customer validation, matching the full-cash conditional write below.
+    // WHY: This early filter avoids stale work; the DB trigger rechecks its clock after all row locks.
     if (sale.expiresAt !== null) payment = payment.gt("expires_at", new Date().toISOString());
     const { data, error } = await payment.select("id").maybeSingle();
-    if (error || !data) return { ok: false, error: "cash_confirmation_failed" };
+    if (error || !data) return {
+      ok: false,
+      // WHY: Only this known trigger error becomes expiry feedback; never disclose database details.
+      error: error?.code === "P0001" && error.message === "Cash request has expired"
+        ? "sale_expired" : "cash_confirmation_failed",
+    };
     return { ok: true, saleId: sale.id, status: "tab_requested" };
   }
 
@@ -847,7 +852,12 @@ export async function payCash(input: unknown): Promise<
   payment = sale.usedAt === null ? payment.is("used_at", null) : payment.eq("used_at", sale.usedAt);
   if (sale.expiresAt !== null) payment = payment.gt("expires_at", new Date().toISOString());
   const { data, error } = await payment.select("id").maybeSingle();
-  if (error || !data) return { ok: false, error: "cash_confirmation_failed" };
+  if (error || !data) return {
+    ok: false,
+    // WHY: Lock-wait expiry is authoritative even when the earlier application check passed.
+    error: error?.code === "P0001" && error.message === "Cash request has expired"
+      ? "sale_expired" : "cash_confirmation_failed",
+  };
   return { ok: true, saleId: sale.id, status: "paid" };
 }
 

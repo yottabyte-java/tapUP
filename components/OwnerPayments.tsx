@@ -63,11 +63,16 @@ function OwnerPaymentRequests({ shopId, refreshKey, onCompleted }: OwnerPayments
   const [busy, startTransition] = useTransition();
   const submitting = useRef(false);
   const generation = useRef(0);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; generation.current += 1; };
+  }, []);
   const load = useCallback(async (pageCursor: PaymentCursor | null = null) => {
     const request = ++generation.current;
     const page = await loadOwnerPaymentPage(shopId, pageCursor);
     // A refresh or shop change may finish before an older read; never restore its stale page.
-    if (request !== generation.current) return;
+    if (!mounted.current || request !== generation.current) return;
     setSales(page.sales);
     setCustomers(page.customers);
     setCursor(pageCursor);
@@ -79,7 +84,7 @@ function OwnerPaymentRequests({ shopId, refreshKey, onCompleted }: OwnerPayments
     startTransition(async () => {
       try { await load(); } catch { if (active) setError("Could not load payment requests. Refresh to try again."); }
     });
-    return () => { active = false; generation.current += 1; };
+    return () => { active = false; };
   }, [load, refreshKey]);
 
   function refresh(pageCursor: PaymentCursor | null = null) {
@@ -92,15 +97,15 @@ function OwnerPaymentRequests({ shopId, refreshKey, onCompleted }: OwnerPayments
   async function act(sale: PendingPayment, action: "approve" | "reject" | "cash", pin?: string): Promise<Result> {
     // WHY: The ref closes the gap before React renders disabled buttons; server CAS/RPC checks handle other tabs/devices.
     if (submitting.current) return { ok: false, error: "action_in_progress" };
-    const actionGeneration = generation.current;
     submitting.current = true;
     setError(""); setMessage("");
     try {
       const result = action === "cash" ? await payCash({ saleId: sale.id })
         : action === "reject" ? await rejectTab({ saleId: sale.id })
         : await approveTab({ saleId: sale.id, shopCustomerId: sale.shop_customer_id, ...(pin ? { pin } : {}) });
-      // A shop change/unmount or newer read invalidates this action's displayed result and refresh.
-      if (actionGeneration !== generation.current) return result;
+      // WHY: Reads may supersede each other, but a same-shop refresh cannot cancel an action's outcome.
+      // The shop-keyed component unmount still prevents results leaking into another shop.
+      if (!mounted.current) return result;
       if (!result.ok) {
         // The mounted keypad clears a mismatch as soon as the customer edits their PIN.
         if (result.error !== "invalid_pin") setError(ownerPaymentError(result.error));
@@ -108,12 +113,12 @@ function OwnerPaymentRequests({ shopId, refreshKey, onCompleted }: OwnerPayments
       }
       setMessage(action === "cash" ? "Cash receipt recorded." : action === "reject" ? "Tab rejected. Any confirmed receipt remains recorded." : "Tab approved.");
       if (action !== "cash" || sale.status === "pending") onCompleted(sale.id);
-      if (actionGeneration === generation.current) {
-        try { await load(cursor); } catch { setError("Action succeeded, but requests could not refresh. Refresh before continuing."); }
+      if (mounted.current) {
+        try { await load(cursor); } catch { if (mounted.current) setError("Action succeeded, but requests could not refresh. Refresh before continuing."); }
       }
       return { ok: true };
     } catch {
-      if (actionGeneration === generation.current) setError("Connection failed. Refresh requests to check whether the action completed before trying again.");
+      if (mounted.current) setError("Connection failed. Refresh requests to check whether the action completed before trying again.");
       return { ok: false, error: "unavailable" };
     } finally { submitting.current = false; }
   }

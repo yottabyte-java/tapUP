@@ -11,9 +11,8 @@
    Fork PRs can run these unprivileged checks; never approve a secret-bearing preview
    build of unreviewed fork code.
 3. In GitHub Settings → Rules → Rulesets (or Branches → Branch protection), target
-   `main`, require pull requests and successful `verify` and `security` checks, require an
-   up-to-date branch, and disallow force pushes/deletion. Both checks have now run
-   successfully on this PR. Review the plan's available protection features
+   `main`, require pull requests and successful `verify`, `security` and `integration` checks, require an
+   up-to-date branch, and disallow force pushes/deletion. Check all three on the final PR commit; the integration job is new. Review the plan's available protection features
    for this private repository. These settings were not changed; the protection
    API returned HTTP 403, so enforcement is unverified.
 4. Review the final diff, CI and CodeRabbit findings before approving a merge.
@@ -25,15 +24,18 @@
    Never force-push, reset shared history, or reverse SQL blindly. Rollback requires
    explicit approval.
 
-### Known release blockers
+### Release gates
 
-The prior verification reproduced full/split cash confirmation after expiry during
-SQL row-lock waits. This pipeline task does not change payment semantics. Full
-Supabase/Auth/OTP/UI checks are still outstanding. Keep production release on hold
-until those are resolved or explicitly assessed by the owner. CodeRabbit also reports
-that a `refreshKey` change can suppress a pending same-shop payment action's feedback
-and completion callback ([review thread](https://github.com/yottabyte-java/tapUP/pull/2#discussion_r4369266529)).
-That payment UI issue requires a separate scoped follow-up; it is not repaired by CI.
+The cash-expiry race is repaired by the post-lock database-clock guard in migration
+`202610250002_guard_cash_confirmation_expiry.sql`; fresh schema contains it too.
+Real PostgreSQL tests cover full/split sale-lock waits, split customer-lock waits,
+rollback and duplicate writes. The same-shop refresh/action-outcome defect is also
+repaired, with UI regressions retaining stale-shop protection. These repairs still
+need their migrations installed in an approved hosted target before release.
+
+Local Auth/PostgREST/RLS and built-app HTTP verification now run successfully.
+Hosted HTTPS, actual email/phone verification, browser end-to-end flows and final
+review remain release gates; local tests do not establish deployed readiness.
 
 ## 2. Continuous integration (Layer 2)
 
@@ -57,9 +59,10 @@ That payment UI issue requires a separate scoped follow-up; it is not repaired b
    provide configuration only; they do not prove database connectivity. CI never loads
    production Supabase keys or applies production SQL.
 4. The PostgreSQL suite creates a new unique database with real schema/RLS/migration and
-   synthetic Auth stubs. The 12 opt-in full Supabase tests require a separate disposable
-   Supabase stack; see the existing final-verification section in `docs/HANDOFF.md`.
-   Do not interpret skips or the SQL stub suite as live GoTrue/PostgREST/OTP verification.
+   synthetic Auth stubs. A separate `integration` job starts real local Supabase
+   Auth/PostgREST and runs all 16 integration tests with generated local keys. The
+   `verify` job's skips are explicitly labelled and are covered by `integration`;
+   require both. Neither job proves a deployed browser/OTP flow.
 5. Open PR #2 → Checks → `verify` to inspect the current commit's actual run, or use
    `gh pr checks 2 --repo yottabyte-java/tapUP`. A passing earlier commit is insufficient
    if relevant code has changed. See `docs/VERIFICATION.md` for the original CI history.
@@ -71,21 +74,22 @@ infrastructure is required.
 
 ## 3. Security and software supply chain (Layer 3)
 
-1. Require both `verify` and `security` in the main branch protection rule once
-   each has run successfully. No setting is changed by this repository patch.
+1. Require `verify`, `security` and `integration` in the main branch protection rule once
+   each has run successfully on the intended revision. No setting is changed by this repository patch.
 2. The `security` job runs on the same unprivileged events as CI:
 
    | Check | Policy | Scope/limits |
    |---|---|---|
    | `npm audit --audit-level=moderate` | Blocking for moderate/high/critical vulnerabilities or audit errors | Includes development dependencies; registry advisories change over time |
-   | Gitleaks 8.30.1 | Blocking, redacted output | Full fetched Git history; official release archive checked against a committed SHA-256 digest |
+   | Gitleaks 8.30.1 | Blocking, redacted output | Full fetched Git history including merge diffs against the first parent; a synthetic merge-only control proves coverage; official archive checked against a committed SHA-256 digest |
    | Semgrep OSS 1.182.1 | Blocking on rule findings or scan errors | Local `.semgrep/security.yml`: dynamic code, raw React HTML, public privileged-key names and direct admin-client imports into client modules; a small static gate, not a complete security audit |
    | Rule positive controls | Blocking | `bash scripts/check-security-rules.sh` verifies all four rules catch synthetic unsafe examples |
    | License inventory | Advisory | `node scripts/license-inventory.mjs` reports lockfile production license declarations to the Actions summary; it does not validate bundled notices or provide legal clearance |
 
-3. The inspected lockfile has LGPL and attribution-bearing components. Review their
-   obligations before distributing application artifacts. A successful inventory
-   command means the report was produced, not that every license was approved.
+3. All 15 advisories have been individually reviewed in `docs/LICENSE_REVIEW.md`:
+   transitive platform-specific Sharp/libvips packages and Caniuse-lite data, with
+   no unknown metadata. Keep notices and review binary/source and attribution
+   obligations before distributing artifacts; this is not legal clearance.
 4. Review GitHub Settings → Security → Code security and analysis for secret scanning,
    push protection and dependency alerts available to this private repo's plan.
    These were not enabled or verified. Do not buy GitHub Code Security/Secret Protection
@@ -100,8 +104,9 @@ infrastructure is required.
 
 ## 4. Supabase database and authentication (Layer 4)
 
-**External gate:** no Supabase account, project keys, or authorized hosted target is
-configured in this sandbox. The following are instructions, not executed setup.
+**External gate:** no authorized hosted Supabase target or account credentials are
+configured. A disposable local stack has been started and tested; the following
+hosted setup steps still require explicit user action.
 Use a disposable preview/test project first. Do not run production SQL without
 explicit approval. Start with [Supabase Free](https://supabase.com/pricing), subject
 to its current quotas and terms; do not enable paid services automatically.
@@ -114,13 +119,22 @@ to its current quotas and terms; do not enable paid services automatically.
    `COMMIT;`) so tables are not exposed between creation and RLS/grant setup. Stop on
    an error. Supabase supplies Auth and its roles; do not install the CI Auth stubs
    into a hosted project. Do not rerun these CREATE scripts on an existing database.
+   If you prefer separate SQL Editor runs, first turn **Enable Data API** off in
+   its integration overview, review/run schema and then RLS separately, verify
+   policies/grants, and re-enable the Data API before app tests. This prevents an
+   exposure window; never disable RLS. See [hardening the Data API](https://supabase.com/docs/guides/database/hardening-data-api).
+   Review/run the optional destructive seed as a separate explicit action only.
 3. On an **existing database**, inspect installed objects and take a backup first.
    `supabase/migrations/202610250001_align_buying_power_floor.sql` replaces only
    `approve_tab_atomic`; it is not a database bootstrap. The current schema already
    contains the same function. Rehearse the migration on a disposable staging copy,
    using a single transaction and stop-on-error; production execution requires
    approval. It changes the R50 scoring floor, preserves service-role-only execution,
-   and does not backfill cached limits or repair the outstanding cash-expiry race.
+   and does not backfill cached limits or fix cash expiry. Migration
+   `202610250002_guard_cash_confirmation_expiry.sql` separately replaces the existing
+   sale-transition trigger function, checking cash expiry after its row locks and
+   stamping receipt time from the database clock. Both definitions are already in
+   the fresh schema. See the rehearsal procedure below.
 4. Verify the five application tables have RLS enabled and privileged approval is
    unavailable to browser roles. These read-only checks expose no customer data:
 
@@ -249,6 +263,13 @@ file, never source control, CI logs, screenshots, chat or this document.
 | `LENDER_API_KEY` | Operator-generated private demo API key, stored securely and supplied by the authorized caller through `x-api-key` | Server-only; required for the lender demo endpoint, not browser payment flows |
 | `NODE_ENV` | Set by Next.js/Vercel (`production` for deployed builds) | Runtime-controlled; do not manually override |
 
+Consumers: `lib/supabase/client.ts`, `server.ts` and `proxy.ts` use the public
+URL/key; `lib/supabase/admin.ts` uses URL plus service-role key for guarded server
+actions, signup, lender data and health. `app/api/v1/buying-power/route.ts` reads
+`LENDER_API_KEY`. These same names apply to local development, Preview and
+Production, with different target-specific values. Public URL/key are required at
+build time; privileged values belong only to the corresponding server runtime.
+
 The code currently uses legacy variable names and has been exercised with anon/
 service-role semantics. Supabase recommends
 [publishable and secret keys](https://supabase.com/docs/guides/api/api-keys) for new
@@ -269,6 +290,7 @@ Local verification-only variables (never production application configuration):
 |---|---|---|
 | `TAPUP_TEST_POSTGRES_CONTAINER` | Existing disposable PostgreSQL 17 Docker container name; GitHub service ID in CI | Local test configuration |
 | `DOCKER_HOST` | Existing Docker Unix socket, only if non-default | Local tool configuration |
+| `TAPUP_SUPABASE_NETWORK` | Optional existing Docker network name passed to the local integration starter | Local test tooling only |
 | `TAPUP_REDTEAM_LOCAL` | Set `1` only when intentionally enabling the local integration harness | Test guard |
 | `TAPUP_REDTEAM_PROJECT_ID` | Must match existing harness/config ID `tapup-redteam-local-20261024` | Test guard |
 | `TAPUP_REDTEAM_SUPABASE_URL` | Must be `http://127.0.0.1:54321` on the test host | Local test endpoint |
@@ -282,11 +304,11 @@ an explicit account/cost decision for the OTP flow.
 
 ## 6. Controlled production release (Layer 6)
 
-1. Fix/resolve the documented cash-expiry defect and complete applicable full
+1. Confirm the cash/UI fixes and both migration versions are included; complete applicable
    Supabase/Auth/UI tests. Confirm the intended PR #2 revision is committed and
    reviewed; merge it into `main` only with explicit approval. A green CI status
    does not waive the known payment defect or skipped integration coverage.
-2. Require `verify` and `security` on the exact release revision. Review license
+2. Require `verify`, `security` and `integration` on the exact release revision. Review license
    advisories and CodeRabbit threads. Read Actions logs through PR → Checks or
    `gh run view <actual-run-id> --repo yottabyte-java/tapUP --log-failed`.
    The angle-bracket run ID is a placeholder to replace with the real ID.
@@ -328,7 +350,7 @@ an explicit account/cost decision for the OTP flow.
    verified until those checks actually pass.
 
 Production release is **waiting for account configuration, defect resolution,
-verification and explicit approval**. No deployment or migration ran in this task.
+verification and explicit approval**. No hosted deployment or production migration ran; both migrations were exercised locally.
 
 
 ## 7. Health, smoke tests and recovery (Layer 7)
@@ -373,8 +395,9 @@ verification and explicit approval**. No deployment or migration ran in this tas
    - Required GitHub checks pass for the exact deployment commit; Vercel's displayed
      source commit and recorded migration version match the release record.
 
-   The known cash-expiry lock-wait defect and outstanding full Supabase verification
-   prevent claiming this checklist passed. No live preview or end-to-end flow ran here.
+   Local SQL, Auth/PostgREST and built-app HTTP checks passed, including lock-wait
+   expiry. They do not establish a preview/browser/OTP pass. Complete and record the
+   hosted checklist before promotion.
 5. Inspect GitHub PR → Checks → job logs and security job summary. CLI equivalents:
 
    ```sh
@@ -397,19 +420,19 @@ verification and explicit approval**. No deployment or migration ran in this tas
 - Deployment status: **not started**.
 - Approved commit, Vercel project/deployment ID, HTTPS origin: not assigned.
 - Supabase target/migration version, release approval and time: not assigned.
-- Live health, Auth/OTP/RLS/payment smoke results: not executed.
+- Local health/Auth/RLS/payment HTTP checks: passed. Hosted HTTPS/browser/OTP smoke: not executed.
 
 ### Manual actions, in order
 
-1. Review PR #2, remaining CodeRabbit comments and the cash-expiry defect. Resolve
-   payment correctness blockers through a scoped follow-up before approving release.
-2. In GitHub, require `verify` and `security` on `main` if the account plan supports
+1. Review PR #2's cash/UI repairs, new migration and final CodeRabbit findings.
+   Resolve any remaining findings before approving release.
+2. In GitHub, require `verify`, `security` and `integration` on `main` if the account plan supports
    rules for this private repo; inspect available secret/push protection. No repository
    settings were changed automatically.
 3. Create/select the authorized non-production Supabase project. Review schema/RLS,
    seed deletion effects and the migration relationship in Layer 4 before running SQL.
-   For the opt-in integration harness, provide its **local** stack and local keys;
-   hosted production keys do not substitute for that test setup.
+   The agent completed local integration setup and tests; use the command below to
+   reproduce them. Never substitute hosted production keys.
 4. Configure synthetic judge identities using Layer 4. Supply a verified phone that
    you control for the customer OTP flow; seed example phones cannot receive OTP.
    Keep passwords/keys private and share judge credentials only through the agreed
@@ -424,3 +447,71 @@ verification and explicit approval**. No deployment or migration ran in this tas
    Separately approve any production SQL and the exact production deployment; merging
    alone does not grant either approval. Configure production Auth URLs/keys only
    from the actual approved target, then record and verify the release.
+
+
+## Disposable local integration (no hosted credentials)
+
+1. Install Docker with a working daemon and Supabase CLI **2.122.0**. CI downloads
+   the official Linux amd64 release and verifies its SHA-256. Node24/npm and the
+   repository lockfile remain the application toolchain.
+2. From the checkout run `bash scripts/check-local-supabase.sh` with `supabase` and
+   `docker` on PATH. It copies the guarded config into a temporary directory, starts
+   the minimal real stack, and bootstraps schema/RLS/migrations only if public has
+   no tables. It never runs `seed.sql`, resets a database or links a hosted project.
+   Existing local schemas are reused without modification; review/apply missing
+   migrations yourself to that confirmed disposable target before testing.
+3. Local CLI status includes keys. The script stores it in a private file and calls
+   `node scripts/run-local-supabase-tests.mjs <private-status.json>`; that runner
+   passes the five `TAPUP_REDTEAM_*` variables to Vitest without printing values.
+   Its command is `npx vitest run tests/redteam/localSupabase.test.ts` with the
+   existing loopback/project guards enabled. Failure returns nonzero.
+4. On this sandbox use the task-local Docker Unix socket through `DOCKER_HOST` and
+   add the installed CLI's runtime bin directory to PATH. If starting here, set
+   `TAPUP_SUPABASE_NETWORK=tapup-supabase-local` (local-only Docker network name).
+   The bridge-none daemon needs its network gateway explicitly configured as
+   `host-gateway-ip`; this is sandbox recovery, not a production requirement.
+5. The script stops only a stack it started and retains its data. Synthetic fixtures
+   clean up their own records. A pre-existing local stack is left running. Never
+   publish status/startup logs or upload local keys as CI artifacts.
+6. Required GitHub checks are **`verify`**, **`security`**, **`integration`**. Integration
+   runs on the same PR/push/manual events, uses no repository secrets, and exercises
+   real email/password sessions, RLS, confirmed-phone consent linking, PIN lockout
+   and simulated recovery, approval/rejection guards, cash expiry, replay and rollback.
+   It does not send real SMS or verify a Vercel browser session.
+
+### Migration rehearsal and recovery
+
+1. Identify the target as disposable/staging. Back up its data and capture installed
+   function definitions with `pg_get_functiondef` before any change. Store backups
+   privately; do not paste database rows or credentials into reports.
+2. For migration001 inspect the exact existing signature
+   `public.approve_tab_atomic(uuid,uuid,uuid,uuid,text,boolean,boolean)`. It uses
+   CREATE OR REPLACE and reapplies REVOKE/GRANT; it updates the R50 scoring floor
+   only, has no DROP/TRUNCATE/DELETE or backfill, and is safe to repeat on the
+   compatible existing schema. It does not fix cash expiry.
+3. Migration002 replaces `public.enforce_sale_state_transition()` without replacing
+   its trigger attachment, permissions or existing guards. It uses `clock_timestamp()`
+   after the sale and split-customer row locks, rejects expired cash atomically, and
+   writes the actual database receipt timestamp. It contains no data rewrite.
+4. In staging, run each reviewed migration in a transaction with stop-on-error
+   (`psql -X -v ON_ERROR_STOP=1 --single-transaction -f <reviewed-file>` with connection
+   configured privately). Compare installed definitions with the fresh schema.
+   Reapply and compare again, then run PostgreSQL and full integration suites.
+   The repository tests exercised both repeatability and transactional rehearsal.
+5. Before commit, ROLLBACK cancels the migration. After commit, prefer a reviewed
+   forward fix. Restoring an older function requires the captured definition,
+   compatible grants/signature and explicit approval; restoring the old cash
+   function reintroduces the expiry race. Code rollback alone does not undo SQL.
+   Restore data from backup only under a separately approved recovery plan.
+6. **Production stop:** obtain explicit approval for the target and exact SQL first.
+   Do not rerun full CREATE schema scripts on an existing database. On a new project,
+   schema already includes both fixes; do not mistake migration001 for a bootstrap.
+
+### Minimal authorized preview dynamic check
+
+After the user authorizes an exact preview origin, run the health curl above and
+check HTTPS redirects, security response headers, unauthenticated protected-page
+redirects and authenticated synthetic owner/customer flows. Limit requests to that
+origin and those fixtures; do not crawl unrelated links or send active attack
+payloads without separate authorization. Record actual URL, commit and outcomes.
+The local HTTP checks are not a DAST pass against a deployment.
