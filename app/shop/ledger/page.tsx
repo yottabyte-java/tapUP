@@ -4,6 +4,7 @@ import { connection } from "next/server";
 import { Suspense } from "react";
 import { z } from "zod";
 import { LedgerDashboard, type LedgerData } from "@/components/CustomerRow";
+import { ShopAccountMenu } from "@/components/ShopAccountMenu";
 import { createClient } from "@/lib/supabase/server";
 import { calculateTodayTakings } from "@/lib/ledger";
 import { calculateBuyingPower } from "@/lib/buyingPower";
@@ -98,7 +99,10 @@ function DataUnavailable() {
   return (
     <main className="flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-white/10 bg-card px-5 py-8 text-center">
-        <h1 className="text-lg font-semibold">Ledger</h1>
+        <header className="flex w-full items-center justify-between">
+          <h1 className="text-lg font-semibold">Ledger</h1>
+          <ShopAccountMenu />
+        </header>
         <p className="mt-3 text-sm text-red-200" role="alert">
           We couldn&apos;t load your shop records. Please try again.
         </p>
@@ -117,7 +121,10 @@ function NoShop() {
   return (
     <main className="flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-white/10 bg-card px-5 py-8 text-center">
-        <h1 className="text-lg font-semibold">Ledger</h1>
+        <header className="flex w-full items-center justify-between">
+          <h1 className="text-lg font-semibold">Ledger</h1>
+          <ShopAccountMenu />
+        </header>
         <p className="mt-3 text-sm text-foreground/70" role="alert">
           We couldn&apos;t find a shop linked to this owner account.
         </p>

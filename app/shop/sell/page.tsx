@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Cart, type CartLine, type SaleItemInput } from "@/components/Cart";
 import { OwnerPayments } from "@/components/OwnerPayments";
+import { ShopAccountMenu } from "@/components/ShopAccountMenu";
 import { PinPad } from "@/components/PinPad";
 import { confirmCustomerIdentity } from "@/lib/actions/customers";
 import { approveTab, createSale } from "@/lib/actions/sales";
@@ -340,12 +341,7 @@ export default function ShopSellPage() {
             <p className="text-[11px] text-foreground/65">Shop Owner</p>
           </div>
         </div>
-        <span aria-hidden="true" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/15 text-foreground/75">
-          <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="8" r="3.2" stroke="currentColor" strokeWidth="1.6" />
-            <path d="M5.5 20a6.5 6.5 0 0 1 13 0" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
-          </svg>
-        </span>
+        <ShopAccountMenu />
       </header>
 
       <nav aria-label="Shop sections" className="mt-2 flex rounded-full bg-card p-1">

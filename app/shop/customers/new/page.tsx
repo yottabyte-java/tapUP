@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { PinPad } from "@/components/PinPad";
+import { ShopAccountMenu } from "@/components/ShopAccountMenu";
 import { addCustomer, confirmCustomerIdentity, setCustomerPin } from "@/lib/actions/customers";
 
 type CreatedCustomer = {
@@ -82,6 +83,7 @@ export default function NewCustomerPage() {
             <span aria-hidden="true" className="text-2xl">‹</span>
           </Link>
           <h1 className="text-lg font-semibold">Set a customer PIN</h1>
+          <span className="ml-auto"><ShopAccountMenu /></span>
         </header>
         <section className="mx-auto mt-8 w-full max-w-sm rounded-2xl border border-teal/50 bg-card px-4 py-6">
           <p className="text-center text-sm text-foreground/75">
@@ -129,6 +131,7 @@ export default function NewCustomerPage() {
           <span aria-hidden="true" className="text-2xl">‹</span>
         </Link>
         <h1 className="text-lg font-semibold">Add New Customer</h1>
+        <span className="ml-auto"><ShopAccountMenu /></span>
       </header>
 
       <form className="mt-6 flex flex-1 flex-col" onSubmit={createCustomer}>

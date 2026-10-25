@@ -6,6 +6,7 @@ import { Suspense } from "react";
 import { z } from "zod";
 import { LimitMeter } from "@/components/LimitMeter";
 import { CustomerAccountActivity } from "@/components/CustomerAccountActivity";
+import { CustomerAccountHeader } from "@/components/CustomerAccountHeader";
 import { WhyLimit } from "@/components/WhyLimit";
 import { calculateBuyingPower, explainLimit, type BuyingPowerHistory } from "@/lib/buyingPower";
 import { likelyToNeedTab } from "@/lib/forecast";
@@ -130,7 +131,7 @@ function DataUnavailable() {
   return (
     <main className="flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col justify-center rounded-[1.4rem] border border-teal/70 px-5 py-8 text-center">
-        <h1 className="text-lg font-semibold">Your Buying Power</h1>
+        <CustomerAccountHeader />
         <p className="mt-3 text-sm text-red-200" role="alert">
           We couldn&apos;t load your buying-power details. Please try again.
         </p>
@@ -149,7 +150,7 @@ function NoShopLinked() {
   return (
     <main className="flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col justify-center rounded-[1.4rem] border border-teal/70 px-5 py-8 text-center">
-        <h1 className="text-lg font-semibold">Your Buying Power</h1>
+        <CustomerAccountHeader />
         <p className="mt-3 text-sm leading-relaxed text-foreground/75">
           Your account is not linked to a shop yet. Ask the shop owner to link your customer record.
         </p>
@@ -392,10 +393,7 @@ async function BuyingPowerContent() {
   return (
     <main className="customer-buying-power-layout flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-4 py-5">
-        <header className="mb-5">
-          <h1 className="text-lg font-semibold">Your Buying Power</h1>
-          <p className="mt-1 text-xs text-foreground/65">A separate record for each shop</p>
-        </header>
+        <CustomerAccountHeader description="A separate record for each shop" />
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           {cards.map((card) => <ShopBuyingPower card={card} key={card.id} />)}
         </div>
@@ -408,7 +406,7 @@ function BuyingPowerLoading() {
   return (
     <main className="flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-4 py-5">
-        <h1 className="text-lg font-semibold">Your Buying Power</h1>
+        <CustomerAccountHeader />
         <p className="mt-3 text-sm text-foreground/70" role="status">
           Loading your shop records…
         </p>

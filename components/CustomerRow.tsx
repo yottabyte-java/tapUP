@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState, useTransition } from "react";
 import { repayTab } from "@/lib/actions/tabs";
+import { ShopAccountMenu } from "@/components/ShopAccountMenu";
 import { formatRand, toCents } from "@/lib/money";
 
 type OutstandingSale = {
@@ -463,12 +464,15 @@ export function LedgerDashboard({ ledger }: { ledger: LedgerData }) {
           <h1 className="text-lg font-semibold">Ledger</h1>
           <p className="text-[11px] text-foreground/60">{ledger.shopName}</p>
         </div>
-        <Link
-          className="flex min-h-11 items-center justify-center rounded-full bg-teal px-4 text-xs font-semibold text-[#041A1E]"
-          href="/shop/sell"
-        >
-          + New sale
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            className="flex min-h-11 items-center justify-center rounded-full bg-teal px-4 text-xs font-semibold text-[#041A1E]"
+            href="/shop/sell"
+          >
+            + New sale
+          </Link>
+          <ShopAccountMenu />
+        </div>
       </header>
 
       {!selectedCustomer && !confirmation && (
