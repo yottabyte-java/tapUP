@@ -1,11 +1,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PaymentControls, type PendingPayment } from "@/components/OwnerPayments";
 import { approveTab, payCash, rejectTab } from "@/lib/actions/sales";
 
 const { state } = vi.hoisted(() => ({ state: {
-  signedIn: true, role: "shop_owner", fail: false, race: false,
+  signedIn: true, role: "shop_owner", fail: false, race: false, delayCustomer: false,
   sale: {} as Record<string, unknown>,
   rpc: vi.fn(), admin: vi.fn(),
 } }));
@@ -22,22 +22,27 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => { state.admin(
   rpc: state.rpc,
   from: (table: string) => {
     const filters: Array<[string, unknown]> = [];
+    const after: Array<[string, string]> = [];
     let update: Record<string, unknown> | undefined;
     const query = {
       select: () => query,
       update: (value: Record<string, unknown>) => { update = value; return query; },
       eq: (key: string, value: unknown) => { filters.push([key, value]); return query; },
       is: (key: string, value: unknown) => { filters.push([key, value]); return query; },
-      gt: () => query,
+      gt: (key: string, value: string) => { after.push([key, value]); return query; },
       maybeSingle: async () => {
         if (state.fail) return { data: null, error: { message: "database failed" } };
-        if (table === "shop_customers") return { data: {
-          id: CUSTOMER, status: "active", consent_at: "2026-10-25T00:00:00Z",
-          customer_profile_id: "profile", owner_confirmed_at: "2026-10-25T00:00:00Z",
-          pin_hash: null, failed_pin_attempts: 0, locked_until: null, credit_limit_cents: 5000,
-        }, error: null };
+        if (table === "shop_customers") {
+          if (state.delayCustomer) vi.advanceTimersByTime(2000);
+          return { data: {
+            id: CUSTOMER, status: "active", consent_at: "2026-10-25T00:00:00Z",
+            customer_profile_id: "profile", owner_confirmed_at: "2026-10-25T00:00:00Z",
+            pin_hash: null, failed_pin_attempts: 0, locked_until: null, credit_limit_cents: 5000,
+          }, error: null };
+        }
         if (update && state.race) state.sale = { ...state.sale, shop_customer_id: "other-customer", method: "cash", used_at: "chosen" };
-        const matches = filters.every(([key, value]) => state.sale[key] === value);
+        const matches = filters.every(([key, value]) => state.sale[key] === value)
+          && after.every(([key, value]) => typeof state.sale[key] === "string" && Date.parse(state.sale[key] as string) > Date.parse(value));
         if (!matches) return { data: null, error: null };
         if (update) Object.assign(state.sale, update);
         return { data: { ...state.sale }, error: null };
@@ -50,6 +55,7 @@ const SALE = "00000000-0000-4000-8000-000000000001";
 const CUSTOMER = "00000000-0000-4000-8000-000000000002";
 beforeEach(() => {
   state.signedIn = true; state.role = "shop_owner"; state.fail = false; state.race = false;
+  state.delayCustomer = false;
   state.admin.mockClear();
   state.rpc.mockReset().mockResolvedValue({ data: { ok: true, saleId: SALE, dueAt: "2026-11-08T00:00:00Z", limitCents: 5000 }, error: null });
   state.sale = { id: SALE, shop_id: "shop", shop_customer_id: CUSTOMER, total_cents: 7500,
@@ -57,6 +63,7 @@ beforeEach(() => {
     paid_now_method: "cash", paid_now_confirmed_at: null, qr_token_hash: null,
     expires_at: null, used_at: "2026-10-25T00:00:00Z" };
 });
+afterEach(() => vi.useRealTimers());
 
 describe("owner payment actions", () => {
   it("approves through the existing RPC with the authenticated owner and shop", async () => {
@@ -107,6 +114,16 @@ describe("owner payment actions", () => {
     state.sale.expires_at = "2000-01-01T00:00:00Z";
     expect(await payCash({ saleId: SALE })).toEqual({ ok: false, error: "sale_expired" });
     expect(state.sale.paid_now_confirmed_at).toBeNull();
+  });
+  it.each(["pending", "tab_requested"])("does not confirm %s cash when expiry passes during customer validation", async (status) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-25T12:00:00Z"));
+    state.sale.expires_at = "2026-10-25T12:00:01Z";
+    if (status === "pending") Object.assign(state.sale, { status, method: "cash", paid_now_cents: 7500, tab_cents: 0 });
+    state.delayCustomer = true;
+    expect(await payCash({ saleId: SALE, shopCustomerId: CUSTOMER })).toEqual({ ok: false, error: "cash_confirmation_failed" });
+    expect(state.sale.paid_now_confirmed_at).toBeNull();
+    expect(state.sale.status).toBe(status);
   });
   it("records a full pending cash payment once", async () => {
     Object.assign(state.sale, { status: "pending", method: "cash", paid_now_cents: 7500, tab_cents: 0 });

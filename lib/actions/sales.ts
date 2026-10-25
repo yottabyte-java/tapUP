@@ -796,15 +796,16 @@ export async function payCash(input: unknown): Promise<
     && sale.paidNowCents > 0
     && sale.paidNowConfirmedAt === null
   ) {
-    const { data, error } = await owner.admin
+    let payment = owner.admin
       .from("sales")
       .update({ paid_now_confirmed_at: new Date().toISOString() })
       .eq("id", sale.id)
       .eq("shop_id", owner.shopId)
       .eq("status", "tab_requested")
-      .is("paid_now_confirmed_at", null)
-      .select("id")
-      .maybeSingle();
+      .is("paid_now_confirmed_at", null);
+    // Recheck expiry after customer validation, matching the full-cash conditional write below.
+    if (sale.expiresAt !== null) payment = payment.gt("expires_at", new Date().toISOString());
+    const { data, error } = await payment.select("id").maybeSingle();
     if (error || !data) return { ok: false, error: "cash_confirmation_failed" };
     return { ok: true, saleId: sale.id, status: "tab_requested" };
   }
