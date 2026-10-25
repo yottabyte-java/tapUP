@@ -5,6 +5,8 @@ import { useState } from "react";
 export type PinPadResult = { ok: true } | { ok: false; error: string };
 
 type PinPadProps = {
+  disabled?: boolean;
+  formatError?: (error: string) => string;
   title?: string;
   description?: string;
   submitLabel?: string;
@@ -15,13 +17,16 @@ const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "backspace", "0", "cl
 
 function errorMessage(error: string): string {
   if (error === "invalid_pin") return "That PIN doesn't match. Try again.";
-  if (error === "pin_locked") return "Too many tries. Try again in 15 minutes.";
+  if (error === "pin_locked") return "Too many incorrect PIN attempts. Wait 15 minutes, then refresh this page to try again.";
   if (error === "pin_rate_limited") return "Too many PIN attempts from this device. Try again in 15 minutes.";
-  if (error === "pin_not_set" || error === "pin_required") return "This customer hasn't set a PIN yet.";
+  if (error === "pin_not_set") return "Set up the customer's PIN before approving the tab.";
+  if (error === "pin_required") return "Ask the customer to enter their PIN. Set it up first if no PIN is set.";
   return "We couldn't verify the PIN. Please try again.";
 }
 
 export function PinPad({
+  disabled = false,
+  formatError = errorMessage,
   title = "Customer PIN",
   description = "Ask the customer to enter their 4-digit PIN to approve this tab.",
   submitLabel = "Submit PIN",
@@ -33,7 +38,7 @@ export function PinPad({
   const [submitting, setSubmitting] = useState(false);
 
   function pressKey(key: typeof keys[number]) {
-    if (submitting || locked) return;
+    if (disabled || submitting || locked) return;
     setMessage("");
     if (key === "backspace") {
       setPin((current) => current.slice(0, -1));
@@ -50,13 +55,13 @@ export function PinPad({
   }
 
   async function submitPin(submittedPin: string) {
-    if (submittedPin.length !== 4 || submitting || locked) return;
+    if (submittedPin.length !== 4 || disabled || submitting || locked) return;
     setPin("");
     setSubmitting(true);
     try {
       const result = await onSubmit(submittedPin);
       if (!result.ok) {
-        setMessage(errorMessage(result.error));
+        setMessage(formatError(result.error));
         if (result.error === "pin_locked") setLocked(true);
       }
     } catch {
@@ -89,7 +94,7 @@ export function PinPad({
           <button
             aria-label={key === "backspace" ? "Delete last digit" : key === "clear" ? "Clear PIN" : `Enter ${key}`}
             className="flex min-h-14 items-center justify-center rounded-xl bg-[#0C2932] text-xl font-medium text-foreground hover:bg-[#123944] focus-visible:outline-2 focus-visible:outline-teal disabled:opacity-50"
-            disabled={submitting || locked}
+            disabled={disabled || submitting || locked}
             key={key}
             onClick={() => pressKey(key)}
             type="button"

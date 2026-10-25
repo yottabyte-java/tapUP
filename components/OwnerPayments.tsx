@@ -4,37 +4,14 @@ import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { PinPad } from "@/components/PinPad";
 import { approveTab, payCash, rejectTab } from "@/lib/actions/sales";
 import { formatRand } from "@/lib/money";
-import { createClient } from "@/lib/supabase/client";
+import { loadOwnerPaymentPage, ownerPaymentError, type PendingPayment, type PaymentCursor, type PaymentCustomer } from "@/lib/ownerPayments";
+export type { PendingPayment } from "@/lib/ownerPayments";
 
-export type PendingPayment = {
-  id: string;
-  shop_customer_id: string | null;
-  total_cents: number;
-  tab_cents: number;
-  paid_now_cents: number;
-  paid_now_method: string | null;
-  paid_now_confirmed_at: string | null;
-  method: string;
-  status: string;
-  expires_at: string | null;
-};
-type Customer = { id: string; display_name: string; customer_profile_id: string | null };
 type Result = { ok: true } | { ok: false; error: string };
-
-function errorMessage(error: string): string {
-  switch (error) {
-    case "customer_not_owner_confirmed": return "Confirm the customer's identity above, then try again.";
-    case "insufficient_buying_power": return "The customer no longer has enough buying power. Reject this request and create a new sale.";
-    case "immediate_payment_unconfirmed": return "Confirm the cash remainder before approving this tab.";
-    case "unauthorized": case "forbidden": return "Sign in as this shop's owner to continue.";
-    case "sale_expired": return "This sale has expired. Create a new sale.";
-    default: return "The action could not be completed. Refresh requests to check the latest state before trying again.";
-  }
-}
 
 export function PaymentControls({ sale, customer, onAction, busy }: {
   sale: PendingPayment;
-  customer?: Customer;
+  customer?: PaymentCustomer;
   onAction: (action: "approve" | "reject" | "cash", pin?: string) => Promise<Result>;
   busy: boolean;
 }) {
@@ -58,8 +35,8 @@ export function PaymentControls({ sale, customer, onAction, busy }: {
           <button className={buttonClass} disabled={busy} onClick={() => void onAction("reject")} type="button">Reject tab</button>
         </>}
       </div>
-      {sale.status === "tab_requested" && customer && !customer.customer_profile_id && !cashDue && !busy && (
-        <PinPad onSubmit={(pin) => onAction("approve", pin)} />
+      {sale.status === "tab_requested" && customer && !customer.customer_profile_id && !cashDue && (
+        <PinPad disabled={busy} formatError={ownerPaymentError} onSubmit={(pin) => onAction("approve", pin)} />
       )}
     </li>
   );
@@ -71,25 +48,23 @@ export function OwnerPayments({ shopId, refreshKey, onCompleted }: {
   onCompleted: (saleId: string) => void;
 }) {
   const [sales, setSales] = useState<PendingPayment[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customers, setCustomers] = useState<PaymentCustomer[]>([]);
+  const [cursor, setCursor] = useState<PaymentCursor | null>(null);
+  const [nextCursor, setNextCursor] = useState<PaymentCursor | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, startTransition] = useTransition();
   const submitting = useRef(false);
-  const load = useCallback(async () => {
-    const supabase = createClient();
-    // WHY: Session-scoped reads expose only RLS-approved, safe columns. Mutations remain server actions.
-    const [saleResult, customerResult] = await Promise.all([
-      supabase.from("sales")
-        .select("id, shop_customer_id, total_cents, tab_cents, paid_now_cents, paid_now_method, paid_now_confirmed_at, method, status, expires_at")
-        .eq("shop_id", shopId).in("status", ["pending", "tab_requested"])
-        .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
-        .order("created_at", { ascending: false }).limit(100),
-      supabase.from("shop_customers").select("id, display_name, customer_profile_id").eq("shop_id", shopId),
-    ]);
-    if (saleResult.error || customerResult.error) throw new Error("requests_unavailable");
-    setSales(saleResult.data ?? []);
-    setCustomers(customerResult.data ?? []);
+  const generation = useRef(0);
+  const load = useCallback(async (pageCursor: PaymentCursor | null = null) => {
+    const request = ++generation.current;
+    const page = await loadOwnerPaymentPage(shopId, pageCursor);
+    // A refresh or shop change may finish before an older read; never restore its stale page.
+    if (request !== generation.current) return;
+    setSales(page.sales);
+    setCustomers(page.customers);
+    setCursor(pageCursor);
+    setNextCursor(page.nextCursor);
   }, [shopId]);
 
   useEffect(() => {
@@ -97,13 +72,13 @@ export function OwnerPayments({ shopId, refreshKey, onCompleted }: {
     startTransition(async () => {
       try { await load(); } catch { if (active) setError("Could not load payment requests. Refresh to try again."); }
     });
-    return () => { active = false; };
+    return () => { active = false; generation.current += 1; };
   }, [load, refreshKey]);
 
-  function refresh() {
+  function refresh(pageCursor: PaymentCursor | null = null) {
     if (submitting.current) return;
     startTransition(async () => {
-      try { await load(); setError(""); } catch { setError("Could not refresh payment requests."); }
+      try { await load(pageCursor); setError(""); } catch { setError("Could not refresh payment requests."); }
     });
   }
 
@@ -116,10 +91,10 @@ export function OwnerPayments({ shopId, refreshKey, onCompleted }: {
       const result = action === "cash" ? await payCash({ saleId: sale.id })
         : action === "reject" ? await rejectTab({ saleId: sale.id })
         : await approveTab({ saleId: sale.id, shopCustomerId: sale.shop_customer_id, ...(pin ? { pin } : {}) });
-      if (!result.ok) { setError(errorMessage(result.error)); return result; }
+      if (!result.ok) { setError(ownerPaymentError(result.error)); return result; }
       setMessage(action === "cash" ? "Cash receipt recorded." : action === "reject" ? "Tab rejected. Any confirmed receipt remains recorded." : "Tab approved.");
       if (action !== "cash" || sale.status === "pending") onCompleted(sale.id);
-      try { await load(); } catch { setError("Action succeeded, but requests could not refresh. Refresh before continuing."); }
+      try { await load(cursor); } catch { setError("Action succeeded, but requests could not refresh. Refresh before continuing."); }
       return { ok: true };
     } catch {
       setError("Connection failed. Refresh requests to check whether the action completed before trying again.");
@@ -131,7 +106,9 @@ export function OwnerPayments({ shopId, refreshKey, onCompleted }: {
     <section aria-label="Owner payment requests" className="mt-3 space-y-3 rounded-2xl border border-teal/40 bg-card p-4">
       <h2 className="text-sm font-semibold">Payment requests</h2>
       <p className="text-xs text-foreground/70">Refresh after the customer chooses how to pay. Confirm cash only after receiving it.</p>
-      <button className="min-h-11 rounded-lg border border-white/20 px-3 text-sm disabled:opacity-50" disabled={busy} onClick={refresh} type="button">{busy ? "Updating…" : "Refresh requests"}</button>
+      <button className="min-h-11 rounded-lg border border-white/20 px-3 text-sm disabled:opacity-50" disabled={busy} onClick={() => refresh()} type="button">{busy ? "Updating…" : cursor ? "Newest requests" : "Refresh requests"}</button>
+      {nextCursor && <button className="min-h-11 rounded-lg border border-white/20 px-3 text-sm disabled:opacity-50" disabled={busy}
+        onClick={() => refresh(nextCursor)} type="button">Older requests</button>}
       {message && <p className="text-sm text-teal" role="status">{message}</p>}
       {error && <p className="text-sm text-red-200" role="alert">{error}</p>}
       <ul className="space-y-3">{sales.map((sale) => <PaymentControls key={sale.id} sale={sale}
