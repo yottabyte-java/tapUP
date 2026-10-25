@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { getSupabaseProjectUrl } from "@/lib/supabase/projectUrl";
 
 function isProtectedPath(pathname: string): boolean {
   return pathname === "/shop"
@@ -11,18 +12,13 @@ function isProtectedPath(pathname: string): boolean {
 }
 
 function applySecurityHeaders(response: NextResponse): NextResponse {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const connectSources = ["'self'"];
-  if (supabaseUrl) {
-    try {
-      const url = new URL(supabaseUrl);
-      if (url.protocol === "https:" || url.protocol === "http:") {
-        connectSources.push(url.origin);
-        connectSources.push(`${url.protocol === "https:" ? "wss:" : "ws:"}//${url.host}`);
-      }
-    } catch {
-      // WHY: An invalid public URL must not become executable CSP source text.
-    }
+  try {
+    const url = new URL(getSupabaseProjectUrl());
+    connectSources.push(url.origin);
+    connectSources.push(`${url.protocol === "https:" ? "wss:" : "ws:"}//${url.host}`);
+  } catch {
+    // WHY: Invalid Supabase configuration must not become executable CSP source text.
   }
   if (process.env.NODE_ENV === "development") {
     connectSources.push("ws:");
@@ -80,13 +76,19 @@ export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
   const pathname = request.nextUrl.pathname;
   const isProtected = isProtectedPath(pathname);
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!isProtected) {
     return applySecurityHeaders(response);
   }
-  if (!supabaseUrl || !supabaseAnonKey) {
+  if (!supabaseAnonKey) {
+    return applySecurityHeaders(new NextResponse("Authentication is unavailable.", { status: 503 }));
+  }
+
+  let supabaseUrl: string;
+  try {
+    supabaseUrl = getSupabaseProjectUrl();
+  } catch {
     return applySecurityHeaders(new NextResponse("Authentication is unavailable.", { status: 503 }));
   }
 

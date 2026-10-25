@@ -1,5 +1,6 @@
 import "server-only";
 import { createClient } from "@supabase/supabase-js";
+import { getSupabaseProjectUrl } from "@/lib/supabase/projectUrl";
 import type {
   BuyingPowerHistory,
   BuyingPowerRepayment,
@@ -103,9 +104,14 @@ function parseRepayments(value: unknown): BuyingPowerRepayment[] {
 }
 
 function createServiceRoleClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  let url: string;
+  try {
+    url = getSupabaseProjectUrl();
+  } catch {
+    throw new LenderDataAccessError("Server database configuration is missing or invalid");
+  }
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceRoleKey) {
+  if (!serviceRoleKey) {
     throw new LenderDataAccessError("Server database configuration is missing");
   }
 

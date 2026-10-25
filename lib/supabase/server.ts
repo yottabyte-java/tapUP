@@ -1,11 +1,12 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { getSupabaseProjectUrl } from "./projectUrl";
 
 // WHY: Server Components, Server Actions, and Route Handlers use cookies to keep the user's session.
 export async function createClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const url = getSupabaseProjectUrl();
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !anonKey) {
+  if (!anonKey) {
     throw new Error("Supabase server configuration is missing");
   }
 
