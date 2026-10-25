@@ -24,7 +24,7 @@ const PAGE_SIZE = 100;
  */
 export async function loadOwnerPaymentPage(shopId: string, cursor: PaymentCursor | null = null) {
   const supabase = createClient();
-  const unexpired = `or(expires_at.is.null,expires_at.gt.${new Date().toISOString()})`;
+  const unexpired = "or(expires_at.is.null,expires_at.gt.now)";
   const older = cursor
     ? `or(created_at.lt.${cursor.created_at},and(created_at.eq.${cursor.created_at},id.lt.${cursor.id}))` : null;
   const { data, error } = await supabase.from("sales")
