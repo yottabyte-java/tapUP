@@ -730,6 +730,7 @@ export async function approveTab(input: unknown): Promise<
 
 const rejectTabSchema = z.object({ saleId: z.string().uuid() }).strict();
 
+/** Cancel only an owned, unapproved tab request, preserving confirmed receipts and rejecting stale submissions. */
 export async function rejectTab(input: unknown): Promise<
   ActionFailure | ActionSuccess<{ saleId: string; status: "cancelled" }>
 > {

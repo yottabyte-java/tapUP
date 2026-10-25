@@ -8,6 +8,7 @@ function dateKey(date: Date): string {
   }).format(date);
 }
 
+/** Sum confirmed receipts on their Johannesburg receipt date; settlement and cancellation are not refunds. */
 export function calculateTodayTakings(
   sales: SaleReceipt[],
   repayments: RepaymentReceipt[],
