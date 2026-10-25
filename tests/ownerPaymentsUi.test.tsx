@@ -154,10 +154,12 @@ describe("owner payment interactions", () => {
     const page = { ...older, sales: [split], customers: [{ ...customer, customer_profile_id: "linked" }] };
     loadPage.mockResolvedValueOnce(page).mockResolvedValueOnce({ ...page, sales: [{ ...split, paid_now_confirmed_at: sale.created_at }] });
     fireEvent.click(screen.getByRole("button", { name: "Older requests" }));
-    await screen.findByRole("button", { name: /Confirm cash received/ });
+    const cashButton = await screen.findByRole("button", { name: /Confirm cash received/ });
+    // WHY: The button exists before the page-loading transition has enabled payment actions.
+    await waitFor(() => expect((cashButton as HTMLButtonElement).disabled).toBe(false));
     expect((screen.getByRole("button", { name: "Approve tab" }) as HTMLButtonElement).disabled).toBe(true);
     cash.mockResolvedValueOnce({ ok: true });
-    fireEvent.click(screen.getByRole("button", { name: /Confirm cash received/ }));
+    fireEvent.click(cashButton);
     await screen.findByText("Cash receipt recorded.");
     expect(cash).toHaveBeenCalledExactlyOnceWith({ saleId: "older" });
     await waitFor(() => expect((screen.getByRole("button", { name: "Approve tab" }) as HTMLButtonElement).disabled).toBe(false));
