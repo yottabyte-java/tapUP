@@ -730,6 +730,7 @@ export async function approveTab(input: unknown): Promise<
 
 const rejectTabSchema = z.object({ saleId: z.string().uuid() }).strict();
 
+/** Cancel only an owned, unapproved tab request, preserving confirmed receipts and rejecting stale submissions. */
 export async function rejectTab(input: unknown): Promise<
   ActionFailure | ActionSuccess<{ saleId: string; status: "cancelled" }>
 > {
@@ -795,16 +796,22 @@ export async function payCash(input: unknown): Promise<
     && sale.paidNowCents > 0
     && sale.paidNowConfirmedAt === null
   ) {
-    const { data, error } = await owner.admin
+    let payment = owner.admin
       .from("sales")
       .update({ paid_now_confirmed_at: new Date().toISOString() })
       .eq("id", sale.id)
       .eq("shop_id", owner.shopId)
       .eq("status", "tab_requested")
-      .is("paid_now_confirmed_at", null)
-      .select("id")
-      .maybeSingle();
-    if (error || !data) return { ok: false, error: "cash_confirmation_failed" };
+      .is("paid_now_confirmed_at", null);
+    // WHY: This early filter avoids stale work; the DB trigger rechecks its clock after all row locks.
+    if (sale.expiresAt !== null) payment = payment.gt("expires_at", new Date().toISOString());
+    const { data, error } = await payment.select("id").maybeSingle();
+    if (error || !data) return {
+      ok: false,
+      // WHY: Only this known trigger error becomes expiry feedback; never disclose database details.
+      error: error?.code === "P0001" && error.message === "Cash request has expired"
+        ? "sale_expired" : "cash_confirmation_failed",
+    };
     return { ok: true, saleId: sale.id, status: "tab_requested" };
   }
 
@@ -845,7 +852,12 @@ export async function payCash(input: unknown): Promise<
   payment = sale.usedAt === null ? payment.is("used_at", null) : payment.eq("used_at", sale.usedAt);
   if (sale.expiresAt !== null) payment = payment.gt("expires_at", new Date().toISOString());
   const { data, error } = await payment.select("id").maybeSingle();
-  if (error || !data) return { ok: false, error: "cash_confirmation_failed" };
+  if (error || !data) return {
+    ok: false,
+    // WHY: Lock-wait expiry is authoritative even when the earlier application check passed.
+    error: error?.code === "P0001" && error.message === "Cash request has expired"
+      ? "sale_expired" : "cash_confirmation_failed",
+  };
   return { ok: true, saleId: sale.id, status: "paid" };
 }
 

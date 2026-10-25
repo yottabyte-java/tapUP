@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# WHY: PR code receives no deployment credentials or write permission, including forks.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npx next typegen && npx tsc --noEmit
+      - run: npm test
+        env:
+          TAPUP_TEST_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+      - name: Integration coverage boundary
+        run: |
+          echo "### Integration coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "Unit, UI and real PostgreSQL tests run here. Full Supabase Auth/PostgREST tests run in the separate integration job. They are NOT verified by this job; require both jobs. See docs/DEPLOYMENT.md for the guarded local command." >> "$GITHUB_STEP_SUMMARY"
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder
+
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Dependency vulnerabilities (moderate and above block)
+        run: npm audit --audit-level=moderate
+      - name: Install verified Gitleaks binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 --max-time 120 https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o "$RUNNER_TEMP/gitleaks.tar.gz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/security-bin"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP/security-bin" gitleaks
+          echo "$RUNNER_TEMP/security-bin" >> "$GITHUB_PATH"
+      - name: Secrets in Git history (blocking, redacted)
+        run: gitleaks git --redact=100 --no-banner --log-opts="--all --diff-merges=first-parent" .
+      - name: Secret scanner merge-diff control
+        run: bash scripts/check-secret-scanner.sh
+      - name: Install pinned Semgrep OSS
+        run: |
+          python3 -m venv "$RUNNER_TEMP/semgrep"
+          "$RUNNER_TEMP/semgrep/bin/pip" install --disable-pip-version-check semgrep==1.182.1
+          echo "$RUNNER_TEMP/semgrep/bin" >> "$GITHUB_PATH"
+      - name: Security rule positive controls
+        run: bash scripts/check-security-rules.sh
+      - name: Scoped static security analysis (blocking)
+        run: semgrep scan --config .semgrep/security.yml --error --metrics=off --disable-version-check app components lib proxy.ts next.config.ts
+      - name: Production license inventory (advisory)
+        run: node scripts/license-inventory.mjs >> "$GITHUB_STEP_SUMMARY"
+
+  integration:
+    # WHY: Auth/PostgREST coverage is a separate real stack, never implied by the PostgreSQL stub suite.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Install verified local Supabase CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 --max-time 120 https://github.com/supabase/cli/releases/download/v2.122.0/supabase_linux_amd64.tar.gz -o "$RUNNER_TEMP/supabase.tar.gz"
+          echo "59ed066847b98d7461c60e9109d40cab6b9756177ce06ebb05b51338519f5136  $RUNNER_TEMP/supabase.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/supabase-bin"
+          tar -xzf "$RUNNER_TEMP/supabase.tar.gz" -C "$RUNNER_TEMP/supabase-bin" supabase
+          echo "$RUNNER_TEMP/supabase-bin" >> "$GITHUB_PATH"
+      - name: Synthetic local Auth, RLS and payment integration
+        run: bash scripts/check-local-supabase.sh
