@@ -354,7 +354,7 @@ No hosted migration was applied. Preserve `.idea/` and PIN compatibility SQL.
 | Duplicate settlement | PASSED: concurrent DB/PostgREST and HTTP replay checks |
 | RLS/server authorization | PASSED: authenticated local negative/positive controls |
 | Health | PASSED: built HTTP200 with local DB and generic503 without config |
-| Final GitHub checks | Read final commit's verify/security/integration; final response records result |
+| Observed GitHub checks | PASSED: CI / verify, CI / security and CI / integration on `32fb5fa5fa00524f0711126f20bb97cfacccb6c8`, [run40153953710](https://github.com/yottabyte-java/tapUP/actions/runs/40153953710). Any subsequent documentation commit is PENDING until its own Checks complete. |
 | Deployment commit | NOT RUN: no deployment exists |
 | Secret-free logs | Checked redacted scanner outputs; keep local status/credential files private |
 
@@ -366,3 +366,11 @@ The final cash suite has12tests; no payment-critical defect remains known from
 these checks. CodeRabbit's later review of2228ad8 independently reported the old
 post-lock cash defect as Major; this repair addresses it. Its earlier Gitleaks
 Minor finding is also fixed. Final-head review remains a separate gate.
+
+CodeRabbit review5641173430 reviewed32fb5fa and posted three Minor documentation
+findings: stale release-gate wording, an imprecise CI-status table entry and license
+terminology. All three are corrected in the documentation follow-up. No payment-code
+finding was reported in that pass. The older PIN thread was resolved after checking
+current messages/keypad regressions. Code/test/runtime inputs remain unchanged, so
+192passing tests and25HTTP checks are reused; the documentation commit's CI is
+PENDING at writing and its final result belongs in the task report/PR Checks.

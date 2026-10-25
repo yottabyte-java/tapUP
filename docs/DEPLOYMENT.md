@@ -86,7 +86,7 @@ infrastructure is required.
    | Rule positive controls | Blocking | `bash scripts/check-security-rules.sh` verifies all four rules catch synthetic unsafe examples |
    | License inventory | Advisory | `node scripts/license-inventory.mjs` reports lockfile production license declarations to the Actions summary; it does not validate bundled notices or provide legal clearance |
 
-3. All 15 advisories have been individually reviewed in `docs/LICENSE_REVIEW.md`:
+3. All 15 license entries requiring review have been individually assessed in `docs/LICENSE_REVIEW.md`:
    transitive platform-specific Sharp/libvips packages and Caniuse-lite data, with
    no unknown metadata. Keep notices and review binary/source and attribution
    obligations before distributing artifacts; this is not legal clearance.
@@ -307,7 +307,7 @@ an explicit account/cost decision for the OTP flow.
 1. Confirm the cash/UI fixes and both migration versions are included; complete applicable
    Supabase/Auth/UI tests. Confirm the intended PR #2 revision is committed and
    reviewed; merge it into `main` only with explicit approval. A green CI status
-   does not waive the known payment defect or skipped integration coverage.
+   does not waive the unresolved payment defects or unverified hosted coverage.
 2. Require `verify`, `security` and `integration` on the exact release revision. Review license
    advisories and CodeRabbit threads. Read Actions logs through PR → Checks or
    `gh run view <actual-run-id> --repo yottabyte-java/tapUP --log-failed`.

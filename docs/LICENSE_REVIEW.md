@@ -1,8 +1,8 @@
 # Dependency license review — hackathon baseline
 
-The lockfile inventory reported 15 advisories among 68 production entries. All
-15 are transitive; none has unknown license metadata. An advisory is not evidence
-of a violation. No dependency was removed or upgraded for licensing.
+The license inventory flagged 15 entries for review among 68 production entries. All
+15 are transitive; none has unknown license metadata. A license review item is not
+evidence of a violation or an npm vulnerability. This is not an npm vulnerability count. No dependency was removed or upgraded for licensing.
 
 Evidence: `npm explain sharp caniuse-lite --json`, the committed lockfile, installed
 `@img/sharp-libvips-linux-x64/README.md` licensing table, its package metadata, and
