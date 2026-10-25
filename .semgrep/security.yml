@@ -1,0 +1,26 @@
+# WHY: Local rules keep this small security gate reviewable and avoid mutable remote rules.
+rules:
+  - id: tapup-no-dynamic-code
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Dynamic code execution is not needed by tapUP; use validated data and ordinary functions.
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+  - id: tapup-no-raw-html
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Render customer content as React text; raw HTML bypasses its escaping.
+    pattern: <$TAG dangerouslySetInnerHTML={$VALUE} ... />
+  - id: tapup-no-public-privileged-key
+    languages: [generic]
+    severity: ERROR
+    message: Privileged keys must never use NEXT_PUBLIC_ names.
+    pattern-regex: '\bNEXT_PUBLIC_[A-Z0-9_]*(SECRET|SERVICE_ROLE|PRIVATE_KEY)[A-Z0-9_]*\b'
+  - id: tapup-no-admin-client-import
+    languages: [generic]
+    severity: ERROR
+    message: Keep the privileged Supabase client in server-only modules.
+    # WHY: Match the Next.js file directive and a later import together across intervening statements.
+    pattern-regex: >-
+      (?s)["']use client["']\s*;?.*?\b(?:from\s*|import\s*)["']@/lib/supabase/admin["']
