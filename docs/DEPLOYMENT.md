@@ -28,7 +28,7 @@
 
 The cash-expiry race is repaired by the post-lock database-clock guard in migration
 `202610250002_guard_cash_confirmation_expiry.sql`; fresh schema contains it too.
-Real PostgreSQL tests cover full/split sale-lock waits, split customer-lock waits,
+Real PostgreSQL tests cover full/split sale-lock waits, split customer-lock waits, full-cash customer-assignment FK waits,
 rollback and duplicate writes. The same-shop refresh/action-outcome defect is also
 repaired, with UI regressions retaining stale-shop protection. These repairs still
 need their migrations installed in an approved hosted target before release.
@@ -491,7 +491,7 @@ verification and explicit approval**. No hosted deployment or production migrati
    compatible existing schema. It does not fix cash expiry.
 3. Migration002 replaces `public.enforce_sale_state_transition()` without replacing
    its trigger attachment, permissions or existing guards. It uses `clock_timestamp()`
-   after the sale and split-customer row locks, rejects expired cash atomically, and
+   after sale, split-customer and full-cash customer-reference locks, rejects expired cash atomically, and
    writes the actual database receipt timestamp. It contains no data rewrite.
 4. In staging, run each reviewed migration in a transaction with stop-on-error
    (`psql -X -v ON_ERROR_STOP=1 --single-transaction -f <reviewed-file>` with connection

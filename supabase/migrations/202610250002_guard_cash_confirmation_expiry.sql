@@ -236,6 +236,13 @@ BEGIN
     AND NEW.paid_now_confirmed_at IS NOT NULL
     AND NEW.paid_now_method = 'cash'
   THEN
+    -- WHY: A full cash sale may attach a customer. Its FK check can wait after this
+    -- BEFORE trigger, so acquire that reference lock before the authoritative clock check.
+    IF NEW.status = 'paid' AND NEW.shop_customer_id IS NOT NULL THEN
+      PERFORM id FROM public.shop_customers
+        WHERE id = NEW.shop_customer_id AND shop_id = NEW.shop_id
+        FOR KEY SHARE;
+    END IF;
     cash_received_at := pg_catalog.clock_timestamp();
     IF OLD.expires_at IS NOT NULL AND OLD.expires_at <= cash_received_at THEN
       RAISE EXCEPTION 'Cash request has expired' USING ERRCODE = 'P0001';

@@ -110,15 +110,19 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
       expect(snapshot(f)).toBe(before);
     });
 
-    it.each(split ? ["sale-1", "sale-2", "customer"] : ["sale-1", "sale-2"])(`rejects ${label} cash after a lock wait (%s)`, async (lock) => {
+    it.each(split ? ["sale-1", "sale-2", "customer"] : ["sale-1", "sale-2", "assignment"])(`rejects ${label} cash after a lock wait (%s)`, async (lock) => {
       const f = fixture(split, 4);
+      if (lock === "assignment") sql(`UPDATE sales SET shop_customer_id=NULL WHERE id='${f.sale}'`);
       const before = snapshot(f);
       const name = `cash_${randomUUID()}`;
-      const lockTarget = lock === "customer" ? `shop_customers WHERE id='${f.customer}'` : `sales WHERE id='${f.sale}'`;
+      const lockTarget = lock === "customer" || lock === "assignment" ? `shop_customers WHERE id='${f.customer}'` : `sales WHERE id='${f.sale}'`;
       const blocker = session(`BEGIN; SELECT id FROM ${lockTarget} FOR UPDATE;`, `${name}_block`, true);
       try {
         await waitFor(`SELECT 1 FROM pg_stat_activity WHERE application_name='${name}_block' AND state='idle in transaction'`);
-        const write = session(confirm(f), name);
+        const query = confirm(f);
+        const write = session(lock === "assignment"
+          ? query.replace("SET paid_now_confirmed_at=", `SET shop_customer_id='${f.customer}',paid_now_confirmed_at=`)
+          : query, name);
         await waitFor(`SELECT 1 FROM pg_stat_activity WHERE application_name='${name}' AND wait_event_type='Lock'`);
         expect(sql(`SELECT expires_at > clock_timestamp() FROM sales WHERE id='${f.sale}'`)).toBe("t");
         // WHY: Release only after the DB's expiry boundary, not after an assumed wall-clock sleep.

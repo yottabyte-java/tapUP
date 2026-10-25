@@ -285,12 +285,12 @@ Node24.21.0/npm11.19.0; unchanged lockfile. Commands from repository root:
 - `npm ci --no-audit --no-fund`: exit0 (existing unrs-resolver script warning).
 - `npm run lint`; `npx next typegen && npx tsc --noEmit`: exit0.
 - Full `npm test` with both guarded local Supabase and isolated PostgreSQL configured:
-  **191 passed, 0 failed, 0 skipped**: 114 unit/action/query/render tests,
-  21 interactive UI tests, 40 PostgreSQL tests, 16 real Supabase integration tests.
+  **192 passed, 0 failed, 0 skipped**: 114 unit/action/query/render tests,
+  21 interactive UI tests, 41 PostgreSQL tests, 16 real Supabase integration tests.
 - `bash scripts/check-local-supabase.sh`: exit0,16/16. The original12 first passed;
   four PostgREST cash cases were then added, and PIN recovery assertions extended.
-- `tests/cashExpiryPostgres.test.ts`:11 real DB tests, including repeated full/split
-  sale-lock waits, split customer-lock wait, unchanged snapshots on rejection,
+- `tests/cashExpiryPostgres.test.ts`:12 real DB tests, including repeated full/split
+  sale-lock waits, split customer-lock wait and full-cash customer-assignment FK wait, unchanged snapshots on rejection,
   authoritative receipt time, duplicate/concurrent confirmations and migration parity.
 - `NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321 NEXT_PUBLIC_SUPABASE_ANON_KEY=ci-placeholder npm run build`:
   exit0. Also rebuilt with actual private local CLI-generated runtime configuration.
@@ -357,3 +357,12 @@ No hosted migration was applied. Preserve `.idea/` and PIN compatibility SQL.
 | Final GitHub checks | Read final commit's verify/security/integration; final response records result |
 | Deployment commit | NOT RUN: no deployment exists |
 | Secret-free logs | Checked redacted scanner outputs; keep local status/credential files private |
+
+Final lock-boundary inspection reproduced one more race: attaching a customer during
+full cash could wait in the FK check after the BEFORE trigger. Its new regression
+failed on3b05805. The trigger now acquires that customer reference KEY SHARE lock
+before reading the clock; the complete192-test suite and25HTTP checks passed again.
+The final cash suite has12tests; no payment-critical defect remains known from
+these checks. CodeRabbit's later review of2228ad8 independently reported the old
+post-lock cash defect as Major; this repair addresses it. Its earlier Gitleaks
+Minor finding is also fixed. Final-head review remains a separate gate.
