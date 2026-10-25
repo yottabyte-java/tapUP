@@ -42,11 +42,18 @@ export function PaymentControls({ sale, customer, onAction, busy }: {
   );
 }
 
-export function OwnerPayments({ shopId, refreshKey, onCompleted }: {
+type OwnerPaymentsProps = {
   shopId: string;
   refreshKey: string;
   onCompleted: (saleId: string) => void;
-}) {
+};
+
+/** Reset request pages, feedback and PIN state whenever the active shop changes. */
+export function OwnerPayments(props: OwnerPaymentsProps) {
+  return <OwnerPaymentRequests key={props.shopId} {...props} />;
+}
+
+function OwnerPaymentRequests({ shopId, refreshKey, onCompleted }: OwnerPaymentsProps) {
   const [sales, setSales] = useState<PendingPayment[]>([]);
   const [customers, setCustomers] = useState<PaymentCustomer[]>([]);
   const [cursor, setCursor] = useState<PaymentCursor | null>(null);
@@ -85,19 +92,28 @@ export function OwnerPayments({ shopId, refreshKey, onCompleted }: {
   async function act(sale: PendingPayment, action: "approve" | "reject" | "cash", pin?: string): Promise<Result> {
     // WHY: The ref closes the gap before React renders disabled buttons; server CAS/RPC checks handle other tabs/devices.
     if (submitting.current) return { ok: false, error: "action_in_progress" };
+    const actionGeneration = generation.current;
     submitting.current = true;
     setError(""); setMessage("");
     try {
       const result = action === "cash" ? await payCash({ saleId: sale.id })
         : action === "reject" ? await rejectTab({ saleId: sale.id })
         : await approveTab({ saleId: sale.id, shopCustomerId: sale.shop_customer_id, ...(pin ? { pin } : {}) });
-      if (!result.ok) { setError(ownerPaymentError(result.error)); return result; }
+      // A shop change/unmount or newer read invalidates this action's displayed result and refresh.
+      if (actionGeneration !== generation.current) return result;
+      if (!result.ok) {
+        // The mounted keypad clears a mismatch as soon as the customer edits their PIN.
+        if (result.error !== "invalid_pin") setError(ownerPaymentError(result.error));
+        return result;
+      }
       setMessage(action === "cash" ? "Cash receipt recorded." : action === "reject" ? "Tab rejected. Any confirmed receipt remains recorded." : "Tab approved.");
       if (action !== "cash" || sale.status === "pending") onCompleted(sale.id);
-      try { await load(cursor); } catch { setError("Action succeeded, but requests could not refresh. Refresh before continuing."); }
+      if (actionGeneration === generation.current) {
+        try { await load(cursor); } catch { setError("Action succeeded, but requests could not refresh. Refresh before continuing."); }
+      }
       return { ok: true };
     } catch {
-      setError("Connection failed. Refresh requests to check whether the action completed before trying again.");
+      if (actionGeneration === generation.current) setError("Connection failed. Refresh requests to check whether the action completed before trying again.");
       return { ok: false, error: "unavailable" };
     } finally { submitting.current = false; }
   }

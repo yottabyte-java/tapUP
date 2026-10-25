@@ -25,8 +25,9 @@ const older = { sales: [{ ...sale, id: "older" }], customers: [{ ...customer, di
 const completed = vi.fn();
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 async function enterPin() {
   for (const digit of [1, 2, 3, 4]) fireEvent.click(screen.getByRole("button", { name: `Enter ${digit}` }));
@@ -101,10 +102,21 @@ describe("owner payment interactions", () => {
     fireEvent.click(key);
     expect(approve).toHaveBeenCalledTimes(1);
     await act(async () => pending.resolve({ ok: false, error: error as string }));
-    await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(error === "invalid_pin" ? 1 : 2));
     expect(screen.getAllByRole("alert").every((alert) => message instanceof RegExp && message.test(alert.textContent ?? ""))).toBe(true);
     expect((key as HTMLButtonElement).disabled).toBe(error === "pin_locked");
     expect(completed).not.toHaveBeenCalled();
+  });
+
+  it("clears a PIN mismatch as soon as the customer starts editing", async () => {
+    await mount();
+    approve.mockResolvedValueOnce({ ok: false, error: "invalid_pin" });
+    await enterPin();
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Enter 1" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByLabelText("1 of 4 PIN digits entered")).toBeTruthy();
+    expect(approve).toHaveBeenCalledTimes(1);
   });
 
   it("retries an incorrect PIN and completes exactly once through the secure action", async () => {
@@ -160,5 +172,28 @@ describe("owner payment interactions", () => {
     await screen.findByText(/Older customer/);
     expect(screen.queryByText(/Newest customer/)).toBeNull();
     expect(loadPage).toHaveBeenLastCalledWith("shop-b", null);
+  });
+
+  it.each(["success", "failure"])("discards a late action %s and clears old requests when the active shop changes", async (outcome) => {
+    const view = render(<OwnerPayments shopId="shop-a" refreshKey="key" onCompleted={completed} />);
+    await screen.findByText(/Newest customer/);
+    await waitFor(() => expect((screen.getByRole("button", { name: "Reject tab" }) as HTMLButtonElement).disabled).toBe(false));
+    const action = deferred<{ ok: true }>();
+    reject.mockReturnValueOnce(action.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Reject tab" }));
+    const read = deferred<typeof older>();
+    loadPage.mockReturnValueOnce(read.promise);
+    view.rerender(<OwnerPayments shopId="shop-b" refreshKey="key" onCompleted={completed} />);
+    expect(screen.queryByText(/Newest customer/)).toBeNull();
+    await act(async () => {
+      if (outcome === "failure") action.reject(new Error("offline"));
+      else action.resolve({ ok: true });
+    });
+    expect(loadPage).toHaveBeenCalledTimes(2);
+    expect(completed).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    await act(async () => read.resolve(older));
+    expect(screen.getByText(/Older customer/)).toBeTruthy();
+    expect(screen.queryByText(/Newest customer/)).toBeNull();
   });
 });
