@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { connection } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
 function SpazaIllustration() {
@@ -49,6 +50,8 @@ function SpazaIllustration() {
 }
 
 async function RedirectSignedInUser(): Promise<null> {
+  // WHY: This session-aware redirect must wait for a request instead of running during prerendering.
+  await connection();
   const supabase = await createClient();
   const { data: { user }, error: authError } = await supabase.auth.getUser();
 

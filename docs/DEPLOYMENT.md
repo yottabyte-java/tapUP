@@ -104,6 +104,84 @@ infrastructure is required.
 
 ## 4. Supabase database and authentication (Layer 4)
 
+### Fresh hackathon demo setup
+
+Use this sequence only for a **new, disposable hackathon project**. The seed deletes
+and rebuilds its fixed demo shop, so never run it against a project containing data
+you need. It creates demo history; it does not create or phone-link the customer judge.
+
+1. Use Supabase **Free** for the hackathon database. Create a new Supabase project
+   in the dashboard, choose the region, set a strong database password, and keep the
+   password and project credentials private. Confirm the project is the intended
+   disposable demo target before opening SQL Editor.
+2. In SQL Editor, run the complete contents of `supabase/schema.sql` followed by
+   `supabase/rls.sql` in one transaction (`BEGIN;` before the schema contents and
+   `COMMIT;` after the RLS contents) on this fresh project. Keep RLS enabled and
+   stop if either script reports an error. These scripts establish the tables, constraints,
+   approval functions, policies and grants; do not use them to recreate an existing
+   database. The fresh schema and RLS files include the current consent objects.
+3. In Authentication → Users, create a **confirmed** owner Auth user with the exact
+   email `judge-owner@example.test` and a private demo password. This address is a
+   seed identifier, not a deliverable inbox. Do not use it for email confirmation.
+4. Now run the complete contents of `supabase/seed.sql` once. It finds that Auth
+   user, creates its owner profile and the fixed demo shop, then deletes and rebuilds
+   rows belonging to that fixed shop. Do not rerun it after recording demo activity
+   unless you intentionally want that shop's sales, repayments and customers erased.
+5. Use Vercel **Hobby** for a personal, non-commercial hackathon demo. Confirm the
+   account's current plan terms apply. Import the intended GitHub repository and set
+   the documented Next.js build settings in Layer 5. Add the target Supabase values
+   from the dashboard to the Vercel project's intended environment:
+   `NEXT_PUBLIC_SUPABASE_URL` (project API URL, public),
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY` (RLS-scoped browser key, public),
+   `SUPABASE_SERVICE_ROLE_KEY` (privileged server-side database/Auth operations,
+   **server-only**, never prefixed `NEXT_PUBLIC_` or used in browser code), and
+   `LENDER_API_KEY` (private key for the lender demo endpoint, server-only). Do not
+   put a database password or service-role key in the public variables. A new
+   Vercel project's first deployment is Production; verify the repository, branch,
+   target and environment, then deploy only when you intend to publish that build.
+   For an existing approved project, use the Preview procedure in Layer 5. This
+   guide does not perform a deployment.
+6. Copy the actual HTTPS origin shown by Vercel. In Supabase Authentication → URL
+   Configuration, set **Site URL** to that exact origin (for example,
+   `https://<your-project>.vercel.app`). If configuring Redirect URLs, allow only
+   that project origin and required paths; do not wildcard all Vercel domains.
+   This app does not pass a custom `emailRedirectTo` or implement an auth callback;
+   confirmation returns to the configured Site URL, after which the user signs in
+   through `/login`.
+7. Create the customer judge at `/signup` with role **customer**, a controlled email,
+   and a private password; complete email confirmation if enabled, then sign in at
+   `/login`. The seeded customer phone numbers are fictional, so they cannot be
+   used for this account's phone verification or linking.
+8. As the owner, add a separate demo customer at `/shop/customers/new`, using the
+   customer's real, controlled South African phone number and record consent. Confirm
+   the customer's identity using the existing owner control. Do not edit seeded rows
+   or link an account by copying a UUID.
+9. Create a fresh sale for that customer. On the customer judge's signed-in phone,
+   open the actual `/pay/[token]` link, request and complete Supabase phone-change
+   OTP verification for the same controlled number, and grant consent. The app links
+   the verified Auth identity to the matching shop record. This requires a working
+   Supabase phone verification provider/configuration and access to the phone; do not
+   bypass OTP or pretend an SMS was verified. The shop owner still approves every tab.
+10. Request `/api/health` on the actual HTTPS origin shown by Vercel. In PowerShell,
+    replace the example with that exact origin:
+
+    ```powershell
+    Invoke-RestMethod -Uri "https://<your-project>.vercel.app/api/health"
+    ```
+
+    Expect HTTP 200 with `{"ok":true}` when the deployed server can
+    query the configured Supabase project. HTTP 503 with `{"ok":false}` means the
+    health check could not reach/use the database; inspect Vercel runtime logs and
+    environment configuration without exposing keys. Health checks database
+    connectivity only; it does not prove login, OTP, RLS or sale flows. See Layer 7.
+
+**What you must have before carrying out these steps:** access to the intended
+Supabase and Vercel accounts, a private owner demo password, the customer's
+controlled email/password, access to a phone that can receive OTPs, and a working
+Supabase phone-verification configuration. The customer OTP step cannot be completed
+with the seed's example phone numbers. Keep judge passwords out of this document and
+share them only through the agreed private channel.
+
 **External gate:** no authorized hosted Supabase target or account credentials are
 configured. A disposable local stack has been started and tested; the following
 hosted setup steps still require explicit user action.
@@ -134,7 +212,11 @@ to its current quotas and terms; do not enable paid services automatically.
    `202610250002_guard_cash_confirmation_expiry.sql` separately replaces the existing
    sale-transition trigger function, checking cash expiry after its row locks and
    stamping receipt time from the database clock. Both definitions are already in
-   the fresh schema. See the rehearsal procedure below.
+   the fresh schema. Migration `202610250003_add_lender_sharing_consent.sql` adds
+   the customer-specific lender-consent column, RPC, and column grant needed by the
+   Buying Power screen and lender API. Apply it through the tracked migration workflow
+   after confirming the intended project; do not run the SQL directly in a remote editor.
+   See the rehearsal procedure below.
 4. Verify the five application tables have RLS enabled and privileged approval is
    unavailable to browser roles. These read-only checks expose no customer data:
 
