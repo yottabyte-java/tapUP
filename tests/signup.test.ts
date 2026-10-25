@@ -94,6 +94,21 @@ describe("signup server action", () => {
     expect(mocks.createAdminClient).not.toHaveBeenCalled();
   });
 
+  it("routes an existing-account Auth error to the dedicated existing-account notice without provisioning", async () => {
+    mocks.signUp.mockResolvedValueOnce({
+      data: { user: null, session: null },
+      error: Object.assign(new Error("User already registered"), { code: "user_already_exists", status: 422 }),
+    });
+    await expectRedirect("/signup?step=details&role=shop_owner&error=existing-account");
+
+    expect(mocks.createAdminClient).not.toHaveBeenCalled();
+    expect(mocks.inserted).toEqual([]);
+    expect(mocks.deleteUser).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("[signup] Auth user creation failed", expect.objectContaining({
+      message: "User already registered", code: "user_already_exists",
+    }));
+  });
+
   it("does not infer an error code from an HTTP status and message", async () => {
     mocks.signUp.mockResolvedValueOnce({ data: { user: null, session: null }, error: Object.assign(
       new Error("Invalid path specified in request URL"), { status: 404 },

@@ -82,7 +82,10 @@ export async function createAccount(formData: FormData): Promise<never> {
     } else {
       logFailure("Auth user creation", new Error("Supabase returned no user and no error"), emailDomain);
     }
-    redirect(`/signup?step=details&role=${role}&error=account`);
+    const existingAccount = signupResult.error
+      && typeof signupResult.error.code === "string"
+      && signupResult.error.code === "user_already_exists";
+    redirect(`/signup?step=details&role=${role}&error=${existingAccount ? "existing-account" : "account"}`);
   }
 
   const user = signupResult.data.user;

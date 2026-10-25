@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { z } from "zod";
+import { ExistingAccountNotice } from "@/components/ExistingAccountNotice";
 import { createAccount } from "@/lib/actions/signup";
 
 const roleSchema = z.enum(["shop_owner", "customer"]);
@@ -138,7 +139,7 @@ async function SignupPageContent({ searchParams }: SignupPageProps) {
                 />
               </label>
 
-              {errorMessage && (
+              {params.error === "existing-account" ? <ExistingAccountNotice /> : errorMessage && (
                 <p className="rounded-lg border border-red-400/40 bg-red-950/30 px-3 py-2 text-sm text-red-200" role="alert">
                   {errorMessage}
                 </p>
@@ -184,7 +185,7 @@ async function SignupPageContent({ searchParams }: SignupPageProps) {
                 <span className="block font-semibold">Customer</span>
                 <span className="mt-1 block text-sm text-foreground/70">Get access to your tab and buying power.</span>
               </button>
-              {errorMessage && (
+              {params.error === "existing-account" ? <ExistingAccountNotice /> : errorMessage && (
                 <p className="rounded-lg border border-red-400/40 bg-red-950/30 px-3 py-2 text-sm text-red-200" role="alert">
                   {errorMessage}
                 </p>
