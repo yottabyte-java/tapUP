@@ -245,6 +245,19 @@ describe("security checks", () => {
     expect(schema).toContain("TO service_role");
   });
 
+  it("migrates lender consent for existing databases without widening access", () => {
+    const migration = readFileSync(
+      resolve(process.cwd(), "supabase/migrations/202610250002_add_lender_sharing_consent.sql"),
+      "utf8",
+    );
+    expect(migration).toContain("ADD COLUMN IF NOT EXISTS lender_sharing_consent_at timestamptz");
+    expect(migration).toContain("SET search_path = ''");
+    expect(migration).toContain("sc.customer_profile_id = caller_id");
+    expect(migration).toContain("FROM PUBLIC, anon, authenticated");
+    expect(migration).toContain("TO authenticated");
+    expect(migration).not.toContain("GRANT SELECT ON public.shop_customers TO anon");
+  });
+
   it("requires a Supabase-confirmed Auth phone for customer linking, not the editable profile phone", async () => {
     configureClients();
     mockState.profileRole = "customer";
