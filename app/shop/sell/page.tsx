@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Cart, type CartLine, type SaleItemInput } from "@/components/Cart";
+import { OwnerPayments } from "@/components/OwnerPayments";
 import { PinPad } from "@/components/PinPad";
 import { confirmCustomerIdentity } from "@/lib/actions/customers";
 import { approveTab, createSale } from "@/lib/actions/sales";
@@ -123,6 +124,7 @@ function BottomNavigation() {
 export default function ShopSellPage() {
   const router = useRouter();
   const [status, setStatus] = useState<PageStatus>("checking");
+  const [shopId, setShopId] = useState("");
   const [shopName, setShopName] = useState("");
   const [pageError, setPageError] = useState("");
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -193,6 +195,7 @@ export default function ShopSellPage() {
         if (confirmationError) throw confirmationError;
 
         if (!disposed) {
+          setShopId(shop.id);
           setShopName(shop.name);
           setPhoneCustomers((customers ?? []).map((customer) => ({
             id: customer.id,
@@ -382,6 +385,16 @@ export default function ShopSellPage() {
           </ul>
         </section>
       )}
+
+      <OwnerPayments shopId={shopId} refreshKey={`${activeSale?.saleId ?? ""}:${customersToConfirm.length}`}
+        onCompleted={(saleId) => {
+          if (activeSale?.saleId === saleId) {
+            setActiveSale(null);
+            setCartItems([]);
+            setPinApprovalOpen(false);
+            setSelectedPhoneCustomerId("");
+          }
+        }} />
 
       {activeSale ? (
         <section aria-labelledby="payment-title" className="my-4 flex flex-1 flex-col items-center rounded-2xl border border-teal/50 bg-card px-5 py-6 text-center">

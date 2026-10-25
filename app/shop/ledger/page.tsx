@@ -5,6 +5,7 @@ import { Suspense } from "react";
 import { z } from "zod";
 import { LedgerDashboard, type LedgerData } from "@/components/CustomerRow";
 import { createClient } from "@/lib/supabase/server";
+import { calculateTodayTakings } from "@/lib/ledger";
 
 const profileSchema = z.object({
   role: z.enum(["shop_owner", "customer"]),
@@ -46,20 +47,10 @@ const repaymentSchema = z.object({
 });
 
 const PAGE_SIZE = 1_000;
-const JOHANNESBURG_TIME_ZONE = "Africa/Johannesburg";
 
 type Customer = z.infer<typeof customerSchema>;
 type Sale = z.infer<typeof saleSchema>;
 type Repayment = z.infer<typeof repaymentSchema>;
-
-function dateKey(date: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: JOHANNESBURG_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
-}
 
 async function loadAllSales(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -207,16 +198,13 @@ async function LedgerContent() {
     }
   }
 
-  let todayTakingsCents = 0;
-  const todayKey = dateKey(now);
+  let todayTakingsCents: number;
+  try {
+    todayTakingsCents = calculateTodayTakings(sales, repayments, now);
+  } catch {
+    return <DataUnavailable />;
+  }
   for (const sale of sales) {
-    const hasConfirmedImmediatePayment = sale.paid_now_confirmed_at !== null
-      && dateKey(new Date(sale.paid_now_confirmed_at)) === todayKey
-      && (sale.status === "paid" || sale.status === "approved");
-    if (hasConfirmedImmediatePayment) {
-      todayTakingsCents += sale.paid_now_cents;
-    }
-
     if (
       sale.status === "approved"
       && sale.shop_customer_id
@@ -228,13 +216,6 @@ async function LedgerContent() {
       owedByCustomer.set(sale.shop_customer_id, nextOwed);
     }
   }
-
-  for (const repayment of repayments) {
-    if (dateKey(new Date(repayment.paid_at)) === todayKey) {
-      todayTakingsCents += repayment.amount_cents;
-    }
-  }
-  if (!Number.isSafeInteger(todayTakingsCents)) return <DataUnavailable />;
 
   const customerRows: LedgerData["customers"] = customers.map((customer) => {
     const outstandingSales = sales
