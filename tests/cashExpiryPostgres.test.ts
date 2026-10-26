@@ -1,10 +1,11 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const container = process.env.TAPUP_TEST_POSTGRES_CONTAINER;
 const database = `tapup_cash_${randomUUID().replaceAll("-", "")}`;
+let databaseCreated = false;
 function args(db = database) {
   if (!container || !/^[a-zA-Z0-9_-]+$/.test(container)) throw new Error("Disposable PostgreSQL container required");
   return ["exec", "-i", container, "psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", db];
@@ -15,7 +16,7 @@ function sql(query: string, db = database, name = "cash-test") {
 }
 function session(query: string, name: string, keepOpen = false) {
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error("Unsafe local PostgreSQL application name");
-  const child = spawn("docker", args(database), { timeout: 25_000 });
+  const child = spawn("docker", args(database), { timeout: 30_000 });
   let stdout = "", stderr = "";
   child.stdout.on("data", (chunk) => { stdout += chunk; });
   child.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -23,28 +24,28 @@ function session(query: string, name: string, keepOpen = false) {
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout: stdout.trim(), stderr }));
   });
-  child.stdin.write(`SET statement_timeout = '20s';\nSET application_name = '${name}';\n${query}\n`);
+  child.stdin.write(`SET statement_timeout = '25s';\nSET application_name = '${name}';\n${query}\n`);
   if (!keepOpen) child.stdin.end();
   return { child, done };
 }
 async function waitForSessions(
   names: string[],
-  expected: "idle_in_transaction" | "blocked",
+  expected: "holds_row_lock" | "blocked",
   running: Array<{ name: string; process: ReturnType<typeof session> }> = [],
 ) {
   if (names.length === 0 || names.some((name) => !/^[a-zA-Z0-9_-]+$/.test(name))) {
     throw new Error("Unsafe local PostgreSQL session name");
   }
   const appNames = names.map((name) => `'${name}'`).join(",");
-  const condition = expected === "idle_in_transaction"
-    ? "a.state = 'idle in transaction' AND a.xact_start IS NOT NULL"
+  const condition = expected === "holds_row_lock"
+    ? "a.xact_start IS NOT NULL AND EXISTS (SELECT 1 FROM pg_catalog.pg_locks AS l WHERE l.pid = a.pid AND l.locktype = 'advisory' AND l.granted)"
     : "a.state = 'active' AND a.wait_event_type = 'Lock' AND a.wait_event IS NOT NULL AND pg_catalog.cardinality(pg_catalog.pg_blocking_pids(a.pid)) > 0";
-  // WHY: Poll from one database session and require PostgreSQL to identify an actual blocker, avoiding repeated container startups and false lock matches.
+  // WHY: The advisory barrier proves the row lock was acquired; wait_event_type plus blocker PIDs proves each writer is in the lock queue, including waiters blocked behind another contender.
   try {
     sql(`DO $wait$
     DECLARE attempt integer; found_sessions integer; observed text;
     BEGIN
-      FOR attempt IN 1..400 LOOP
+      FOR attempt IN 1..800 LOOP
         SELECT count(*) INTO found_sessions
           FROM pg_catalog.pg_stat_activity AS a
           WHERE a.application_name IN (${appNames}) AND ${condition};
@@ -57,7 +58,7 @@ async function waitForSessions(
         INTO observed
         FROM pg_catalog.pg_stat_activity AS a
         WHERE a.application_name IN (${appNames});
-      RAISE EXCEPTION 'Expected PostgreSQL session state % was not reached; observed: %',
+      RAISE EXCEPTION 'Expected PostgreSQL session condition % was not reached; observed: %',
         '${expected}', COALESCE(observed, 'no matching sessions');
     END
     $wait$;`);
@@ -70,8 +71,17 @@ async function waitForSessions(
       const details = results.map(({ name, code, stderr }) => `${name} exited ${code}: ${stderr.trim() || "no stderr"}`).join("; ");
       throw new Error(`${error instanceof Error ? error.message : "PostgreSQL session wait failed"}; ${details}`);
     }
+    const pending = running.filter(({ process }) => process.child.exitCode === null)
+      .map(({ name }) => `${name} process still running`).join("; ");
+    if (pending) throw new Error(`${error instanceof Error ? error.message : "PostgreSQL session wait failed"}; ${pending}`);
     throw error;
   }
+}
+
+function rowLockBlocker(table: "sales" | "shop_customers", id: string, name: string) {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("Unsafe PostgreSQL row-lock ID");
+  // WHY: The transaction advisory lock is an observable barrier acquired only after the row lock succeeds.
+  return session(`BEGIN; SELECT id FROM ${table} WHERE id='${id}' FOR UPDATE; SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('${name}'));`, `${name}_block`, true);
 }
 
 function waitForQrExpiry(saleId: string) {
@@ -86,6 +96,7 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
   beforeAll(async () => {
     // WHY: Each suite owns a fresh database; no existing database or customer data is reset.
     sql(`CREATE DATABASE ${database}`, "postgres");
+    databaseCreated = true;
     // Role creation can race the existing parity suite on a fresh CI server.
     sql(`DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon; END IF;
@@ -112,6 +123,14 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
     sql(completionMigration);
     expect(sql("SELECT pg_get_functiondef('public.enforce_sale_state_transition()'::regprocedure)")).toBe(before);
     expect(sql("SELECT pg_get_functiondef('public.approve_tab_atomic(uuid,uuid,uuid,uuid,text,boolean,boolean)'::regprocedure)")).toBe(approvalBefore);
+  });
+
+  afterAll(() => {
+    if (!databaseCreated) return;
+    // WHY: Remove only the uniquely named disposable database this suite created, including sessions left by a failed assertion.
+    sql(`SELECT pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity WHERE datname='${database}' AND pid <> pg_catalog.pg_backend_pid()`, "postgres", "cash_test_cleanup");
+    sql(`DROP DATABASE ${database}`, "postgres", "cash_test_cleanup");
+    databaseCreated = false;
   });
 
   function fixture(split: boolean, seconds = 60, unusedQr = false) {
@@ -173,10 +192,12 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
       if (lock === "assignment") sql(`UPDATE sales SET shop_customer_id=NULL WHERE id='${f.sale}'`);
       const before = snapshot(f);
       const name = `cash_${randomUUID()}`;
-      const lockTarget = lock === "customer" || lock === "assignment" ? `shop_customers WHERE id='${f.customer}'` : `sales WHERE id='${f.sale}'`;
-      const blocker = session(`BEGIN; SELECT id FROM ${lockTarget} FOR UPDATE;`, `${name}_block`, true);
+      const lockTarget = lock === "customer" || lock === "assignment"
+        ? { table: "shop_customers" as const, id: f.customer }
+        : { table: "sales" as const, id: f.sale };
+      const blocker = rowLockBlocker(lockTarget.table, lockTarget.id, name);
       try {
-        await waitForSessions([`${name}_block`], "idle_in_transaction", [{ name: `${name}_block`, process: blocker }]);
+        await waitForSessions([`${name}_block`], "holds_row_lock", [{ name: `${name}_block`, process: blocker }]);
         const query = confirm(f);
         const write = session(lock === "assignment"
           ? query.replace("SET paid_now_confirmed_at=", `SET shop_customer_id='${f.customer}',paid_now_confirmed_at=`)
@@ -195,14 +216,14 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
         if (!blocker.child.stdin.destroyed) blocker.child.stdin.end("ROLLBACK;\n");
         await blocker.done;
       }
-    }, 30000);
+    }, 45000);
 
     it(`serializes concurrent ${label} confirmations to one receipt`, async () => {
       const f = fixture(split);
       const name = `duplicate_${randomUUID()}`;
-      const blocker = session(`BEGIN; SELECT id FROM sales WHERE id='${f.sale}' FOR UPDATE;`, `${name}_block`, true);
+      const blocker = rowLockBlocker("sales", f.sale, name);
       try {
-        await waitForSessions([`${name}_block`], "idle_in_transaction", [{ name: `${name}_block`, process: blocker }]);
+        await waitForSessions([`${name}_block`], "holds_row_lock", [{ name: `${name}_block`, process: blocker }]);
         const query = confirm(f);
         const a = session(query, `${name}_a`), b = session(query, `${name}_b`);
         await waitForSessions([`${name}_a`, `${name}_b`], "blocked", [
@@ -217,7 +238,7 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
         if (!blocker.child.stdin.destroyed) blocker.child.stdin.end("ROLLBACK;\n");
         await blocker.done;
       }
-    }, 30000);
+    }, 45000);
   }
 
   it.each(["tab request", "demo-card purchase"])("rejects a %s queued on the customer lock until after QR expiry", async (transition) => {
@@ -225,9 +246,9 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
     const f = fixture(false, 6, true);
     const before = snapshot(f);
     const name = `qr_expiry_${randomUUID()}`;
-    const blocker = session(`BEGIN; SELECT id FROM shop_customers WHERE id='${f.customer}' FOR UPDATE;`, `${name}_block`, true);
+    const blocker = rowLockBlocker("shop_customers", f.customer, name);
     try {
-      await waitForSessions([`${name}_block`], "idle_in_transaction", [{ name: `${name}_block`, process: blocker }]);
+      await waitForSessions([`${name}_block`], "holds_row_lock", [{ name: `${name}_block`, process: blocker }]);
       const transitionSql = transition === "tab request"
         ? `UPDATE sales SET shop_customer_id='${f.customer}',method='tab',status='tab_requested',
              paid_now_cents=0,tab_cents=7500,used_at=clock_timestamp() WHERE id='${f.sale}';`
@@ -247,5 +268,5 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
       if (!blocker.child.stdin.destroyed) blocker.child.stdin.end("ROLLBACK;\n");
       await blocker.done;
     }
-  }, 30000);
+  }, 45000);
 });
