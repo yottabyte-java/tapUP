@@ -1,48 +1,90 @@
 # tapUP
 
-tapUP turns a spaza shop owner's phone into a digital till for recording sales and managing customer tabs.  
-Customers build a shop-specific transaction and repayment history that informs their buying power.  
+**The spaza tab, but with a record.**
+
+tapUP turns a spaza shop owner's phone into a digital till for recording sales, managing customer tabs, and tracking repayments. Customers build a shop-specific transaction and repayment history that helps inform their buying power.
+
 Our goal is to support financial inclusion by making everyday spaza transactions easier to track.
 
-**Live app:** https://tap-up-beryl.vercel.app/  
-**GitHub:** https://github.com/yottabyte-java/tapUP
+## Try the live demo
 
-## Demo accounts
+**Live app:** https://tap-pk53x8bqi-yottabytes.vercel.app/
+
+**Alternative deployment:** https://tap-up-beryl.vercel.app/
+
+**GitHub repository:** https://github.com/yottabyte-java/tapUP
+
+### Demo accounts
+
+Use the demo accounts below to explore tapUP. Replace these placeholders with working credentials before sharing the README.
 
 | Role | Login |
 |---|---|
 | Shop owner | `[SHOP_OWNER_DEMO_EMAIL]` |
 | Customer | `[CUSTOMER_DEMO_EMAIL]` |
-| Demo password | `[DEMO_PASSWORD_OR_ACCESS_INSTRUCTIONS]` |
+| Password | `[DEMO_PASSWORD_OR_ACCESS_INSTRUCTIONS]` |
 
-Replace these placeholders with working demo credentials before sharing the README publicly. Never commit real secrets.
+If demo accounts are not available, use the application's signup flow to create an account.
+
+## How to explore tapUP
+
+### 1. Shop owner
+
+Explore the shop-owner experience to see how a spaza shop can manage everyday transactions digitally.
+
+- Record sales from a mobile-friendly interface.
+- Manage customers and their tabs.
+- Track outstanding balances and repayments.
+- View transaction activity.
+
+### 2. Customer
+
+Explore the customer experience to see how everyday purchases can contribute to a transaction history.
+
+- View your shop-related activity.
+- Track tab balances and repayments.
+- See buying power informed by recorded behaviour.
+
+*The exact features available depend on the account and the current demo data.*
+
+## What problem are we solving?
+
+Many spaza transactions happen informally, making it difficult for shop owners to keep consistent records of customer tabs and repayments. Customers may also lack a clear record of their repayment behaviour at an individual shop.
+
+tapUP explores a simple digital alternative: record transactions, track repayment behaviour, and use that history to inform customer buying power.
 
 ## Features
 
-- Record sales using a mobile-friendly interface.
-- Manage customer tabs and outstanding balances.
-- Track customer repayments and transaction history.
-- Display customer buying power informed by recorded behaviour.
-- Support a digital workflow for spaza shop owners and customers.
+- **Digital till:** Record shop sales using a phone.
+- **Customer tabs:** Track purchases made on credit and outstanding balances.
+- **Repayment tracking:** Record repayments and build transaction history.
+- **Buying power:** Display buying power informed by recorded behaviour.
+- **Mobile-friendly experience:** Support shop owners and customers through a digital workflow.
 
 ## What's simulated?
 
-- **Payments:** Simulated; no real money is transferred.
-- **SMS:** Simulated; live SMS delivery is not guaranteed.
-- **Buying power:** Uses preliminary prototype rules and is not a formal credit score or lending decision.
+- **Payments:** Simulated. No real money is transferred.
+- **SMS:** Simulated. Live SMS delivery is not guaranteed.
+- **Buying power:** Uses preliminary prototype rules. It is not a formal credit score or lending decision.
 
-## Tech stack
+## Technology stack
 
 - Next.js and React
 - TypeScript
 - Supabase and PostgreSQL
-- SQL database schema and row-level security
+- SQL schema and row-level security
 - Vitest and Playwright
 - Vercel
 
 ## Run locally
 
-**Requirements:** Node.js, npm and a Supabase project configured for development.
+### Requirements
+
+- Node.js
+- npm
+- A Supabase project configured for development
+
+Clone the repository and install dependencies:
 
 ```bash
 git clone https://github.com/yottabyte-java/tapUP.git
@@ -50,7 +92,9 @@ cd tapUP
 npm install
 ```
 
-Copy `.env.example` to `.env.local` and fill in the required values for your own Supabase project. Keep `.env.local` and all secrets out of version control.
+Copy `.env.example` to `.env.local` and configure the required environment variables for your own Supabase project.
+
+Start the development server:
 
 ```bash
 npm run dev
@@ -62,9 +106,9 @@ For available test commands, see `package.json`.
 
 ## Limitations
 
-tapUP is a working hackathon MVP, not a production banking or lending platform. Buying-power rules need further validation before being used for real credit decisions. Initial user research was a seven-person pilot and should not be treated as representative market research. Payments and SMS are simulated.
+tapUP is a hackathon MVP, not a production banking or lending platform. Buying-power rules require further validation before being used for real credit decisions. Initial user research was a seven-person pilot and should not be treated as representative market research. Payments and SMS are simulated.
 
-## Documentation
+## Project documentation
 
 - [Project context](00_PROJECT_CONTEXT.md)
 - [Agent workflow](AGENTS.md)
