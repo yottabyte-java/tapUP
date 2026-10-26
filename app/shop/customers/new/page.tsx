@@ -1,16 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { PinPad } from "@/components/PinPad";
-import { addCustomer, setCustomerPin } from "@/lib/actions/customers";
+import { ShopAccountMenu } from "@/components/ShopAccountMenu";
+import { addCustomer, confirmCustomerIdentity, listManualCustomersNeedingSetup, setCustomerPin } from "@/lib/actions/customers";
 
 type CreatedCustomer = {
   shopCustomerId: string;
   name: string;
   phone: string;
 };
+
+type IncompleteCustomer = CreatedCustomer & { pinSet: boolean };
 
 function addCustomerError(error: string): string {
   if (error === "phone_already_added") return "A customer with this phone number is already on your list.";
@@ -26,6 +29,61 @@ export default function NewCustomerPage() {
   const [customer, setCustomer] = useState<CreatedCustomer | null>(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [pinSaved, setPinSaved] = useState(false);
+  const [identityVerified, setIdentityVerified] = useState(false);
+  const [incompleteCustomers, setIncompleteCustomers] = useState<IncompleteCustomer[]>([]);
+  const [loadingIncomplete, setLoadingIncomplete] = useState(true);
+  const [incompleteError, setIncompleteError] = useState(false);
+
+  const loadIncompleteCustomers = useCallback(async () => {
+    setLoadingIncomplete(true);
+    setIncompleteError(false);
+    try {
+      const result = await listManualCustomersNeedingSetup();
+      if (!result.ok) {
+        setIncompleteError(true);
+        return;
+      }
+      setIncompleteCustomers(result.customers.map((item) => ({
+        shopCustomerId: item.shopCustomerId,
+        name: item.name,
+        phone: item.phone,
+        pinSet: item.pinSet,
+      })));
+    } catch {
+      setIncompleteError(true);
+    } finally {
+      setLoadingIncomplete(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void listManualCustomersNeedingSetup()
+      .then((result) => {
+        if (!active) return;
+        if (!result.ok) {
+          setIncompleteError(true);
+          return;
+        }
+        setIncompleteCustomers(result.customers.map((item) => ({
+          shopCustomerId: item.shopCustomerId,
+          name: item.name,
+          phone: item.phone,
+          pinSet: item.pinSet,
+        })));
+      })
+      .catch(() => { if (active) setIncompleteError(true); })
+      .finally(() => { if (active) setLoadingIncomplete(false); });
+    return () => { active = false; };
+  }, []);
+
+  function resumeCustomerSetup(incomplete: IncompleteCustomer) {
+    setCustomer({ shopCustomerId: incomplete.shopCustomerId, name: incomplete.name, phone: incomplete.phone });
+    setPinSaved(incomplete.pinSet);
+    setIdentityVerified(false);
+    setError("");
+  }
 
   async function createCustomer(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -50,8 +108,26 @@ export default function NewCustomerPage() {
     if (!customer) return { ok: false as const, error: "customer_not_found" };
     const result = await setCustomerPin({ shopCustomerId: customer.shopCustomerId, pin });
     if (!result.ok) return result;
-    router.replace("/shop/sell");
+    setPinSaved(true);
     return { ok: true as const };
+  }
+
+  async function confirmIdentity() {
+    if (!customer || !identityVerified || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      const result = await confirmCustomerIdentity({ shopCustomerId: customer.shopCustomerId });
+      if (!result.ok) {
+        setError("We couldn't record the identity confirmation. Please try again.");
+        return;
+      }
+      router.replace("/shop/sell");
+    } catch {
+      setError("We couldn't record the identity confirmation. Please try again.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   if (customer) {
@@ -62,17 +138,42 @@ export default function NewCustomerPage() {
             <span aria-hidden="true" className="text-2xl">‹</span>
           </Link>
           <h1 className="text-lg font-semibold">Set a customer PIN</h1>
+          <span className="ml-auto"><ShopAccountMenu /></span>
         </header>
         <section className="mx-auto mt-8 w-full max-w-sm rounded-2xl border border-teal/50 bg-card px-4 py-6">
           <p className="text-center text-sm text-foreground/75">
             {customer.name} · {customer.phone}
           </p>
-          <PinPad
-            description="Ask the customer to enter a private 4-digit PIN on this phone."
-            onSubmit={savePin}
-            submitLabel="Saving PIN"
-            title="Create customer PIN"
-          />
+          {!pinSaved ? (
+            <PinPad
+              description="Ask the customer to enter a private 4-digit PIN on this phone."
+              onSubmit={savePin}
+              submitLabel="Saving PIN"
+              title="Create customer PIN"
+            />
+          ) : (
+            <div className="mt-5">
+              <p className="text-center text-sm text-teal" role="status">PIN saved.</p>
+              <label className="mt-5 flex cursor-pointer items-start gap-3 text-sm leading-relaxed">
+                <input
+                  checked={identityVerified}
+                  className="mt-0.5 h-5 w-5 shrink-0 accent-teal"
+                  onChange={(event) => setIdentityVerified(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>I verified this customer&apos;s identity in person and confirm the shop record belongs to them.</span>
+              </label>
+              <button
+                className="mt-5 min-h-12 w-full rounded-full bg-teal px-5 text-sm font-semibold text-[#041A1E] disabled:opacity-40"
+                disabled={!identityVerified || saving}
+                onClick={() => void confirmIdentity()}
+                type="button"
+              >
+                {saving ? "Recording confirmation…" : "Confirm customer identity"}
+              </button>
+              {error && <p className="mt-3 text-sm text-red-200" role="alert">{error}</p>}
+            </div>
+          )}
         </section>
       </main>
     );
@@ -85,7 +186,35 @@ export default function NewCustomerPage() {
           <span aria-hidden="true" className="text-2xl">‹</span>
         </Link>
         <h1 className="text-lg font-semibold">Add New Customer</h1>
+        <span className="ml-auto"><ShopAccountMenu /></span>
       </header>
+
+      {loadingIncomplete && <p className="mt-4 text-xs text-foreground/65" role="status">Checking for unfinished customer setup…</p>}
+      {incompleteError && (
+        <div className="mt-4 rounded-xl border border-amber/40 bg-card p-3" role="alert">
+          <p className="text-xs">We couldn&apos;t load unfinished customer setup. Refresh this list before trying a phone number again.</p>
+          <button className="mt-2 min-h-10 rounded-lg border border-amber/50 px-3 text-xs" onClick={() => void loadIncompleteCustomers()} type="button">
+            Retry setup list
+          </button>
+        </div>
+      )}
+      {incompleteCustomers.length > 0 && (
+        <section aria-labelledby="resume-customer-title" className="mt-4 rounded-2xl border border-amber/40 bg-card p-4">
+          <h2 className="text-sm font-semibold" id="resume-customer-title">Continue customer setup</h2>
+          <p className="mt-1 text-xs text-foreground/70">Resume a saved manual customer record instead of adding the phone number again.</p>
+          <ul className="mt-3 space-y-2">
+            {incompleteCustomers.map((incomplete) => (
+              <li className="flex items-center justify-between gap-3 border-t border-white/10 pt-2" key={incomplete.shopCustomerId}>
+                <span className="min-w-0 text-xs">{incomplete.name} · {incomplete.phone}</span>
+                <button className="min-h-10 shrink-0 rounded-full border border-amber/50 px-3 text-xs font-semibold"
+                  onClick={() => resumeCustomerSetup(incomplete)} type="button">
+                  Resume
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <form className="mt-6 flex flex-1 flex-col" onSubmit={createCustomer}>
         <label className="text-xs font-medium" htmlFor="customer-name">Full name</label>

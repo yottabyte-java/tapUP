@@ -55,6 +55,18 @@ export interface BuyingPowerHistory {
   repayments: BuyingPowerRepayment[];
 }
 
+export function hasCompletedPurchase(
+  history: BuyingPowerHistory,
+  now: string | Date,
+): boolean {
+  const nowMilliseconds = timestamp(now, "now");
+  const start = nowMilliseconds - HISTORY_DAYS * DAY_MILLISECONDS;
+  return history.sales.some((sale) =>
+    COMPLETED_STATUSES.has(sale.status)
+      && isInWindow(sale.createdAt, start, nowMilliseconds, "sale.createdAt"),
+  );
+}
+
 export interface BuyingPowerResult {
   limitCents: number;
   level: number;

@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState, useTransition } from "react";
 import { repayTab } from "@/lib/actions/tabs";
+import { ShopAccountMenu } from "@/components/ShopAccountMenu";
 import { formatRand, toCents } from "@/lib/money";
 
 type OutstandingSale = {
@@ -65,6 +66,11 @@ function formatDate(value: string): string {
 
 function getRepaymentError(error: string): string {
   switch (error) {
+    case "repayment_recorded_sale_status_unavailable":
+    case "repayment_recorded_buying_power_unavailable":
+      return "Payment was recorded, but the updated account could not be loaded. Refresh records before recording another payment.";
+    case "repayment_recording_failed":
+      return "We couldn't confirm whether the payment was recorded. Refresh records to check before trying again.";
     case "amount_exceeds_outstanding_balance":
       return "That amount is more than the remaining balance. Refresh and try again.";
     case "sale_has_no_outstanding_balance":
@@ -197,6 +203,10 @@ function CustomerDetail({
   onBack: () => void;
   onRepaymentRecorded: (confirmation: RepaymentConfirmation) => void;
 }) {
+  const router = useRouter();
+  const [refreshing, startRefresh] = useTransition();
+  const [needsRefresh, setNeedsRefresh] = useState(false);
+  const submission = useRef(false);
   const [saleId, setSaleId] = useState("");
   const [amount, setAmount] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -204,6 +214,8 @@ function CustomerDetail({
 
   async function submitRepayment(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // WHY: A second event can arrive before the disabled state renders; never submit two partial receipts.
+    if (submission.current || needsRefresh || refreshing) return;
     setErrorMessage("");
 
     if (!/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(amount)) {
@@ -223,11 +235,18 @@ function CustomerDetail({
       return;
     }
 
+    submission.current = true;
     setSubmitting(true);
     try {
       const result = await repayTab({ saleId, amountCents });
       if (!result.ok) {
         setErrorMessage(getRepaymentError(result.error));
+        if (result.error.startsWith("repayment_recorded_") || result.error === "repayment_recording_failed") {
+          // WHY: A failed follow-up query does not roll back an already committed receipt.
+          setNeedsRefresh(true);
+          setSaleId("");
+          setAmount("");
+        }
         return;
       }
       // WHY: The returned on-time result comes from the database trigger, not the shopkeeper's device clock.
@@ -237,8 +256,12 @@ function CustomerDetail({
         onTime: result.onTime,
       });
     } catch {
-      setErrorMessage("We couldn’t record the repayment. Please check your connection and try again.");
+      setErrorMessage("Connection failed. Refresh records to check whether the payment was recorded before trying again.");
+      setNeedsRefresh(true);
+      setSaleId("");
+      setAmount("");
     } finally {
+      submission.current = false;
       setSubmitting(false);
     }
   }
@@ -276,6 +299,14 @@ function CustomerDetail({
         </div>
       </header>
 
+      {errorMessage && <p className="text-sm text-red-200" role="alert">{errorMessage}</p>}
+      {needsRefresh && <button className="min-h-11 rounded-lg border border-teal/50 px-3 text-sm disabled:opacity-50"
+        disabled={refreshing} type="button" onClick={() => {
+          setSaleId(""); setAmount("");
+          startRefresh(() => router.refresh());
+          setNeedsRefresh(false);
+        }}>Refresh records</button>}
+
       <section aria-labelledby="open-tabs-title" className="rounded-2xl border border-white/10 bg-card p-4">
         <h3 className="text-sm font-semibold" id="open-tabs-title">Outstanding tabs</h3>
         {customer.outstandingSales.length === 0 ? (
@@ -293,6 +324,7 @@ function CustomerDetail({
                   </div>
                   <button
                     className="min-h-11 rounded-lg bg-teal px-3 text-xs font-semibold text-[#041A1E]"
+                    disabled={submitting || needsRefresh || refreshing}
                     onClick={() => {
                       setSaleId(sale.id);
                       setAmount((sale.owedCents / 100).toFixed(2));
@@ -325,9 +357,6 @@ function CustomerDetail({
                     <p className="mt-1 text-[11px] text-foreground/60">
                       Remaining balance: {formatRand(sale.owedCents)}
                     </p>
-                    {errorMessage && (
-                      <p className="mt-2 text-xs text-red-200" role="alert">{errorMessage}</p>
-                    )}
                     <div className="mt-3 grid grid-cols-2 gap-2">
                       <button
                         className="min-h-11 rounded-lg border border-white/15 text-xs"
@@ -429,18 +458,21 @@ export function LedgerDashboard({ ledger }: { ledger: LedgerData }) {
   }
 
   return (
-    <main className="flex min-h-full flex-col px-3 pt-3">
+    <main className="shop-ledger-layout flex min-h-full flex-col px-3 pt-3">
       <header className="flex min-h-14 items-center justify-between px-1">
         <div>
           <h1 className="text-lg font-semibold">Ledger</h1>
           <p className="text-[11px] text-foreground/60">{ledger.shopName}</p>
         </div>
-        <Link
-          className="flex min-h-11 items-center justify-center rounded-full bg-teal px-4 text-xs font-semibold text-[#041A1E]"
-          href="/shop/sell"
-        >
-          + New sale
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            className="flex min-h-11 items-center justify-center rounded-full bg-teal px-4 text-xs font-semibold text-[#041A1E]"
+            href="/shop/sell"
+          >
+            + New sale
+          </Link>
+          <ShopAccountMenu />
+        </div>
       </header>
 
       {!selectedCustomer && !confirmation && (
@@ -511,7 +543,7 @@ export function LedgerDashboard({ ledger }: { ledger: LedgerData }) {
             onRepaymentRecorded={showConfirmation}
           />
         ) : tab === "customers" ? (
-          <section aria-label="Customers" className="space-y-2">
+          <section aria-label="Customers" className="grid grid-cols-1 gap-2 lg:grid-cols-2">
             {ledger.customers.length === 0 ? (
               <p className="rounded-xl border border-white/10 bg-card p-4 text-sm text-foreground/70">
                 No customers yet. Add a customer before recording a tab.

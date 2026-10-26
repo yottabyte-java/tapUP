@@ -3,6 +3,7 @@ import { GET } from "@/app/api/v1/buying-power/route";
 import { loadBuyingPowerHistory } from "@/lib/lenderData";
 
 vi.mock("@/lib/lenderData", () => ({
+  LenderConsentRequiredError: class LenderConsentRequiredError extends Error {},
   LenderDataAccessError: class LenderDataAccessError extends Error {},
   loadBuyingPowerHistory: vi.fn(),
 }));
@@ -54,6 +55,41 @@ describe("lender buying-power API", () => {
     expect(await response.json()).toEqual({ error: "Shop customer not found" });
   });
 
+  it("denies buying-power disclosure when lender consent is missing", async () => {
+    const { LenderConsentRequiredError } = await import("@/lib/lenderData");
+    vi.mocked(loadBuyingPowerHistory).mockRejectedValueOnce(new LenderConsentRequiredError());
+
+    const response = await GET(
+      request(`/api/v1/buying-power?shop=${SHOP_ID}&customer=${CUSTOMER_ID}`),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "Customer consent is required" });
+  });
+
+  it("denies buying-power disclosure after lender consent is revoked", async () => {
+    const { LenderConsentRequiredError } = await import("@/lib/lenderData");
+    vi.mocked(loadBuyingPowerHistory).mockRejectedValueOnce(new LenderConsentRequiredError());
+
+    const response = await GET(
+      request(`/api/v1/buying-power?shop=${SHOP_ID}&customer=${CUSTOMER_ID}`),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "Customer consent is required" });
+  });
+
+  it("does not disclose data for a customer identifier paired with the wrong shop", async () => {
+    vi.mocked(loadBuyingPowerHistory).mockResolvedValueOnce(null);
+
+    const response = await GET(
+      request(`/api/v1/buying-power?shop=${SHOP_ID}&customer=${CUSTOMER_ID}`),
+    );
+
+    expect(response.status).toBe(404);
+    expect(loadBuyingPowerHistory).toHaveBeenCalledWith(SHOP_ID, CUSTOMER_ID);
+  });
+
   it("returns only the demo buying-power response for a found shop customer", async () => {
     vi.mocked(loadBuyingPowerHistory).mockResolvedValue({ sales: [], repayments: [] });
 
@@ -66,6 +102,7 @@ describe("lender buying-power API", () => {
     expect(Object.keys(body).sort()).toEqual(["demo", "level", "limitCents", "reasons"]);
     expect(body).toMatchObject({ limitCents: 0, level: 0, demo: true });
     expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(loadBuyingPowerHistory).toHaveBeenCalledWith(SHOP_ID, CUSTOMER_ID);
   });
 
   it("returns 429 with Retry-After after the IP reaches the lender API limit", async () => {

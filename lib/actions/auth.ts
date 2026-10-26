@@ -1,6 +1,7 @@
 "use server";
 
 import { headers } from "next/headers";
+import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { checkRateLimit, getClientIp, RATE_LIMITS } from "@/lib/rateLimit";
 import { createClient } from "@/lib/supabase/server";
@@ -53,4 +54,30 @@ export async function signIn(input: unknown): Promise<SignInResult> {
   }
 
   return { ok: true, role: profile.role };
+}
+
+export type SignOutResult = { ok: true } | { ok: false };
+
+export async function signOut(): Promise<SignOutResult> {
+  try {
+    const supabase = await createClient();
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      const details = error as { code?: unknown; status?: unknown; name?: unknown };
+      console.error("[auth] Sign out failed", {
+        code: typeof details.code === "string" ? details.code : "unknown",
+        status: typeof details.status === "number" ? details.status : undefined,
+        errorName: typeof details.name === "string" ? details.name : "unknown",
+      });
+      return { ok: false };
+    }
+
+    // WHY: Discard cached protected route output after the session cookies are cleared.
+    revalidatePath("/", "layout");
+    return { ok: true };
+  } catch {
+    // WHY: Never expose session or provider diagnostics to the user or application logs.
+    console.error("[auth] Sign out failed", { code: "unknown", errorName: "unknown" });
+    return { ok: false };
+  }
 }

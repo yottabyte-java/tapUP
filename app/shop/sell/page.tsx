@@ -6,7 +6,10 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Cart, type CartLine, type SaleItemInput } from "@/components/Cart";
+import { OwnerPayments } from "@/components/OwnerPayments";
+import { ShopAccountMenu } from "@/components/ShopAccountMenu";
 import { PinPad } from "@/components/PinPad";
+import { confirmCustomerIdentity } from "@/lib/actions/customers";
 import { approveTab, createSale } from "@/lib/actions/sales";
 import { formatRand } from "@/lib/money";
 import { getProductByBarcode, products, type Product } from "@/lib/products";
@@ -122,6 +125,7 @@ function BottomNavigation() {
 export default function ShopSellPage() {
   const router = useRouter();
   const [status, setStatus] = useState<PageStatus>("checking");
+  const [shopId, setShopId] = useState("");
   const [shopName, setShopName] = useState("");
   const [pageError, setPageError] = useState("");
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -129,6 +133,7 @@ export default function ShopSellPage() {
   const [activeSale, setActiveSale] = useState<ActiveSale | null>(null);
   const [now, setNow] = useState(0);
   const [phoneCustomers, setPhoneCustomers] = useState<PhoneCustomer[]>([]);
+  const [customersToConfirm, setCustomersToConfirm] = useState<PhoneCustomer[]>([]);
   const [pinApprovalOpen, setPinApprovalOpen] = useState(false);
   const [selectedPhoneCustomerId, setSelectedPhoneCustomerId] = useState("");
 
@@ -179,9 +184,26 @@ export default function ShopSellPage() {
           .order("display_name");
         if (customersError) throw customersError;
 
+        const { data: unconfirmedCustomers, error: confirmationError } = await supabase
+          .from("shop_customers")
+          .select("id, display_name, customer_phone")
+          .eq("shop_id", shop.id)
+          .eq("status", "active")
+          .not("customer_profile_id", "is", null)
+          .not("consent_at", "is", null)
+          .is("owner_confirmed_at", null)
+          .order("display_name");
+        if (confirmationError) throw confirmationError;
+
         if (!disposed) {
+          setShopId(shop.id);
           setShopName(shop.name);
           setPhoneCustomers((customers ?? []).map((customer) => ({
+            id: customer.id,
+            displayName: customer.display_name,
+            phone: customer.customer_phone,
+          })));
+          setCustomersToConfirm((unconfirmedCustomers ?? []).map((customer) => ({
             id: customer.id,
             displayName: customer.display_name,
             phone: customer.customer_phone,
@@ -222,6 +244,15 @@ export default function ShopSellPage() {
     });
     setPageError("");
   }, []);
+
+  async function attestCustomerIdentity(customer: PhoneCustomer) {
+    const result = await confirmCustomerIdentity({ shopCustomerId: customer.id });
+    if (!result.ok) {
+      setPageError("We couldn't record that identity confirmation. Refresh and try again.");
+      return;
+    }
+    setCustomersToConfirm((current) => current.filter((item) => item.id !== customer.id));
+  }
 
   function handleBarcode(barcode: string) {
     const product = getProductByBarcode(barcode);
@@ -297,7 +328,7 @@ export default function ShopSellPage() {
   }
 
   return (
-    <main className="flex min-h-full flex-col px-3 pt-3">
+    <main className="shop-sell-layout flex min-h-full flex-col px-3 pt-3">
       <header className="flex min-h-14 items-center justify-between px-1">
         <div className="flex min-w-0 items-center gap-2.5">
           <span aria-hidden="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-teal text-[#041A1E]">
@@ -310,12 +341,7 @@ export default function ShopSellPage() {
             <p className="text-[11px] text-foreground/65">Shop Owner</p>
           </div>
         </div>
-        <span aria-hidden="true" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/15 text-foreground/75">
-          <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="8" r="3.2" stroke="currentColor" strokeWidth="1.6" />
-            <path d="M5.5 20a6.5 6.5 0 0 1 13 0" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
-          </svg>
-        </span>
+        <ShopAccountMenu />
       </header>
 
       <nav aria-label="Shop sections" className="mt-2 flex rounded-full bg-card p-1">
@@ -333,8 +359,41 @@ export default function ShopSellPage() {
         </p>
       )}
 
+      {customersToConfirm.length > 0 && (
+        <section aria-labelledby="customer-confirmation-title" className="mt-3 rounded-2xl border border-amber/40 bg-card p-4">
+          <h2 className="text-sm font-semibold" id="customer-confirmation-title">Confirm linked customers</h2>
+          <p className="mt-1 text-xs leading-relaxed text-foreground/70">
+            Confirm only after you have checked the customer&apos;s identity in person.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {customersToConfirm.map((customer) => (
+              <li className="flex items-center justify-between gap-3 border-t border-white/10 pt-2" key={customer.id}>
+                <span className="min-w-0 text-xs">{customer.displayName} · {customer.phone}</span>
+                <button
+                  className="min-h-9 shrink-0 rounded-full border border-amber/50 px-3 text-xs font-semibold"
+                  onClick={() => void attestCustomerIdentity(customer)}
+                  type="button"
+                >
+                  I verified them
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <OwnerPayments shopId={shopId} activeSaleId={activeSale?.saleId} refreshKey={`${activeSale?.saleId ?? ""}:${customersToConfirm.length}`}
+        onCompleted={(saleId) => {
+          if (activeSale?.saleId === saleId) {
+            setActiveSale(null);
+            setCartItems([]);
+            setPinApprovalOpen(false);
+            setSelectedPhoneCustomerId("");
+          }
+        }} />
+
       {activeSale ? (
-        <section aria-labelledby="payment-title" className="my-4 flex flex-1 flex-col items-center rounded-2xl border border-teal/50 bg-card px-5 py-6 text-center">
+        <section aria-labelledby="payment-title" className="sale-payment-panel my-4 flex flex-1 flex-col items-center rounded-2xl border border-teal/50 bg-card px-5 py-6 text-center">
           <h2 className="text-lg font-semibold" id="payment-title">Customer Payment</h2>
           <p className="mt-2 text-2xl font-bold">{formatRand(activeSale.totalCents)}</p>
           <p className="mt-2 text-sm text-foreground/75" role="timer">
@@ -346,7 +405,10 @@ export default function ShopSellPage() {
               <div className="mt-5 rounded-xl bg-white p-3">
                 <QRCodeSVG
                   aria-label="QR code for customer payment"
-                  size={208}
+                  // WHY: The QR standard's four-module quiet zone keeps its finder patterns clear.
+                  marginSize={4}
+                  level="M"
+                  size={246}
                   value={activeSale.paymentUrl}
                 />
               </div>
@@ -433,7 +495,8 @@ export default function ShopSellPage() {
         </section>
       ) : (
         <>
-          <section aria-labelledby="scan-title" className="relative mt-3 flex min-h-[9.5rem] flex-col items-center justify-center overflow-hidden rounded-2xl border border-teal/40 bg-card px-4 py-4 text-center">
+          <div className="sale-workspace">
+          <section aria-labelledby="scan-title" className="sale-scan relative mt-3 flex min-h-[9.5rem] flex-col items-center justify-center overflow-hidden rounded-2xl border border-teal/40 bg-card px-4 py-4 text-center">
             <span aria-hidden="true" className="absolute left-3 top-3 h-5 w-5 rounded-tl-lg border-l-2 border-t-2 border-teal" />
             <span aria-hidden="true" className="absolute right-3 top-3 h-5 w-5 rounded-tr-lg border-r-2 border-t-2 border-teal" />
             <span aria-hidden="true" className="absolute bottom-3 left-3 h-5 w-5 rounded-bl-lg border-b-2 border-l-2 border-teal" />
@@ -451,7 +514,7 @@ export default function ShopSellPage() {
             </button>
           </section>
 
-          <section aria-labelledby="manual-title" className="mt-3">
+          <section aria-labelledby="manual-title" className="sale-manual mt-3">
             <h2 className="mb-2 px-1 text-xs font-semibold text-foreground/75" id="manual-title">Or add item manually</h2>
             <ul className="flex flex-col gap-1.5">
               {products.map((product) => (
@@ -474,13 +537,14 @@ export default function ShopSellPage() {
             </ul>
           </section>
 
-          <section aria-label="Current sale" className="mt-4 rounded-2xl border border-white/10 bg-bg p-2.5">
+          <section aria-label="Current sale" className="sale-basket mt-4 rounded-2xl border border-white/10 bg-bg p-2.5">
             <Cart
               items={cartItems}
               onCharge={handleCharge}
               onItemsChange={setCartItems}
             />
           </section>
+          </div>
         </>
       )}
 

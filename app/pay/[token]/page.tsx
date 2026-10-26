@@ -1,7 +1,13 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getCustomerPayConsentState, linkWithConsent } from "@/lib/actions/customers";
+import { connection } from "next/server";
+import {
+  getCustomerPayConsentState,
+  linkWithConsent,
+  requestCustomerPhoneVerification,
+  verifyCustomerPhone,
+} from "@/lib/actions/customers";
 import {
   demoPay,
   getCustomerPayDetails,
@@ -12,10 +18,11 @@ import { formatRand } from "@/lib/money";
 
 type PageProps = {
   params: Promise<{ token: string }>;
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; phone?: string }>;
 };
 
 type PayDetails = {
+  shopName: string;
   totalCents: number;
   limitCents: number;
   availableCents: number;
@@ -80,7 +87,7 @@ function ConsentRequired({ token, showError }: { token: string; showError: boole
         <section className="mt-5 rounded-xl bg-card p-4">
           <h2 className="text-sm font-semibold">POPIA consent</h2>
           <p className="mt-2 text-sm leading-relaxed text-foreground/80">
-            The shop uses your purchase and repayment history to keep a record and calculate buying power at this shop.
+            Your purchases and repayments will be recorded for this shop and used to explain your buying power here.
           </p>
           {showError && (
             <p className="mt-3 text-sm text-red-200" role="alert">
@@ -90,7 +97,7 @@ function ConsentRequired({ token, showError }: { token: string; showError: boole
           <form action={submitConsent} className="mt-4">
             <label className="flex cursor-pointer items-start gap-2.5 text-sm leading-relaxed">
               <input className="mt-0.5 h-5 w-5 shrink-0 accent-teal" name="consent" required type="checkbox" />
-              <span>I confirm that I have the customer&apos;s consent to collect and store their personal information for this service.</span>
+              <span>I agree to link my account to this shop and let it record my purchases and repayments.</span>
             </label>
             <button
               className="mt-5 min-h-12 w-full rounded-full bg-teal px-5 py-3 text-sm font-semibold text-[#041A1E]"
@@ -100,9 +107,61 @@ function ConsentRequired({ token, showError }: { token: string; showError: boole
             </button>
           </form>
           <p className="mt-4 text-center text-xs text-foreground/65">
-            Your account will only be linked to this shop after you give consent.
+            Your shop-specific record is created after you give consent. Buying power remains separate for each shop.
           </p>
         </section>
+      </section>
+    </main>
+  );
+}
+
+function VerifyCustomerPhone({ token, sent, error }: { token: string; sent: boolean; error?: string }) {
+  async function requestCode(formData: FormData) {
+    "use server";
+    const result = await requestCustomerPhoneVerification({ token, phone: formData.get("phone") });
+    if (!result.ok) redirect(`/pay/${token}?phone=error`);
+    redirect(`/pay/${token}?phone=sent`);
+  }
+
+  async function confirmCode(formData: FormData) {
+    "use server";
+    const result = await verifyCustomerPhone({
+      saleToken: token,
+      phone: formData.get("phone"),
+      token: formData.get("code"),
+    });
+    if (!result.ok) {
+      if (result.error === "unauthorized") redirect("/login");
+      redirect(`/pay/${token}?phone=mismatch`);
+    }
+    redirect(`/pay/${token}`);
+  }
+
+  return (
+    <main className="flex min-h-full flex-col px-3 py-3">
+      <section className="flex flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-5 py-6">
+        <h1 className="text-lg font-semibold">Verify your phone</h1>
+        <p className="mt-2 text-sm leading-relaxed text-foreground/75">
+          Verify your phone number with an SMS code before linking your account to this shop.
+        </p>
+        {error === "mismatch" && <p className="mt-3 text-sm text-red-200" role="alert">That verified number is not linked to this shop record.</p>}
+        {error === "error" && <p className="mt-3 text-sm text-red-200" role="alert">We couldn&apos;t send or verify the SMS code. Check the number and try again.</p>}
+        {!sent ? (
+          <form action={requestCode} className="mt-5 flex flex-col">
+            <label className="text-xs font-medium" htmlFor="verify-phone">Phone number</label>
+            <input autoComplete="tel" className="mt-2 min-h-12 rounded-xl border border-teal/50 bg-card px-3 text-sm" id="verify-phone" inputMode="tel" name="phone" placeholder="082 555 0199" required />
+            <button className="mt-5 min-h-12 rounded-full bg-teal px-5 text-sm font-semibold text-[#041A1E]" type="submit">Send verification code</button>
+          </form>
+        ) : (
+          <form action={confirmCode} className="mt-5 flex flex-col">
+            <label className="text-xs font-medium" htmlFor="verify-phone-again">Phone number</label>
+            <input autoComplete="tel" className="mt-2 min-h-12 rounded-xl border border-teal/50 bg-card px-3 text-sm" id="verify-phone-again" inputMode="tel" name="phone" placeholder="082 555 0199" required />
+            <label className="mt-4 text-xs font-medium" htmlFor="verify-code">SMS code</label>
+            <input autoComplete="one-time-code" className="mt-2 min-h-12 rounded-xl border border-teal/50 bg-card px-3 text-sm" id="verify-code" inputMode="numeric" name="code" required />
+            <button className="mt-5 min-h-12 rounded-full bg-teal px-5 text-sm font-semibold text-[#041A1E]" type="submit">Verify phone</button>
+          </form>
+        )}
+        <p className="mt-5 text-xs text-foreground/60">SMS verification must be enabled for this Supabase project.</p>
       </section>
     </main>
   );
@@ -135,6 +194,8 @@ function PaymentError({ token }: { token: string }) {
 }
 
 async function CustomerPayContent({ params, searchParams }: PageProps) {
+  // WHY: Auth and expiry use the current clock; they must not execute during cached prerendering.
+  await connection();
   const [{ token }, query] = await Promise.all([params, searchParams]);
   const result = await getCustomerPayDetails(token);
 
@@ -144,6 +205,9 @@ async function CustomerPayContent({ params, searchParams }: PageProps) {
       const consentState = await getCustomerPayConsentState(token);
       if (!consentState.ok) {
         if (consentState.error === "unauthorized") redirect("/login");
+        if (consentState.error === "phone_required") {
+          return <VerifyCustomerPhone error={query.phone} sent={query.phone === "sent"} token={token} />;
+        }
         if (consentState.error !== "invalid_link" && consentState.error !== "forbidden") {
           return <PaymentError token={token} />;
         }
@@ -157,6 +221,7 @@ async function CustomerPayContent({ params, searchParams }: PageProps) {
   }
 
   const details: PayDetails = {
+    shopName: result.shopName,
     totalCents: result.totalCents,
     limitCents: result.limitCents,
     availableCents: result.availableCents,
@@ -211,7 +276,7 @@ async function CustomerPayContent({ params, searchParams }: PageProps) {
       : await requestCustomerCash(token);
     if (!cashResult.ok) {
       if (cashResult.error === "unauthorized") redirect("/login");
-      if (cashResult.error === "invalid_link" || cashResult.error === "sale_not_payable") {
+      if (cashResult.error === "invalid_link" || cashResult.error === "sale_not_payable" || cashResult.error === "sale_expired") {
         redirect(`/pay/${token}`);
       }
       redirect(`/pay/${token}?error=payment`);
@@ -237,7 +302,10 @@ async function CustomerPayContent({ params, searchParams }: PageProps) {
               <path d="m15 18-6-6 6-6M9 12h11" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
             </svg>
           </Link>
-          <h1 className="text-base font-semibold">Pay for your items</h1>
+          <div className="min-w-0">
+            <h1 className="text-base font-semibold">Pay for your items</h1>
+            <p className="truncate text-xs text-foreground/70">{details.shopName}</p>
+          </div>
         </header>
 
         <section aria-label="Sale total" className="mt-3 rounded-xl bg-card px-3 py-2.5">

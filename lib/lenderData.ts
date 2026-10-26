@@ -1,5 +1,6 @@
 import "server-only";
 import { createClient } from "@supabase/supabase-js";
+import { getSupabaseProjectUrl } from "@/lib/supabase/projectUrl";
 import type {
   BuyingPowerHistory,
   BuyingPowerRepayment,
@@ -10,6 +11,7 @@ import type {
 } from "@/lib/buyingPower";
 
 export class LenderDataAccessError extends Error {}
+export class LenderConsentRequiredError extends Error {}
 
 function isSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value);
@@ -102,9 +104,14 @@ function parseRepayments(value: unknown): BuyingPowerRepayment[] {
 }
 
 function createServiceRoleClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  let url: string;
+  try {
+    url = getSupabaseProjectUrl();
+  } catch {
+    throw new LenderDataAccessError("Server database configuration is missing or invalid");
+  }
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceRoleKey) {
+  if (!serviceRoleKey) {
     throw new LenderDataAccessError("Server database configuration is missing");
   }
 
@@ -118,15 +125,33 @@ function createServiceRoleClient() {
   });
 }
 
+async function consentIsCurrent(
+  supabase: ReturnType<typeof createServiceRoleClient>,
+  shopId: string,
+  customerId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("shop_customers")
+    .select("lender_sharing_consent_at")
+    .eq("shop_id", shopId)
+    .eq("id", customerId)
+    .maybeSingle();
+  if (error) throw new LenderDataAccessError("Could not recheck lender consent");
+  if (!data) return false;
+  if (typeof data.lender_sharing_consent_at !== "string") {
+    throw new LenderConsentRequiredError("Customer has revoked lender sharing");
+  }
+  return true;
+}
+
 export async function loadBuyingPowerHistory(
   shopId: string,
   customerId: string,
-  now: Date,
 ): Promise<BuyingPowerHistory | null> {
   const supabase = createServiceRoleClient();
   const { data: customer, error: customerError } = await supabase
     .from("shop_customers")
-    .select("id")
+    .select("id, lender_sharing_consent_at")
     .eq("shop_id", shopId)
     .eq("id", customerId)
     .maybeSingle();
@@ -137,6 +162,9 @@ export async function loadBuyingPowerHistory(
   if (!customer) {
     // WHY: A single scoped lookup hides whether the shop or customer identifier was absent.
     return null;
+  }
+  if (typeof customer.lender_sharing_consent_at !== "string") {
+    throw new LenderConsentRequiredError("Customer has not authorized lender sharing");
   }
 
   const { data: salesData, error: salesError } = await supabase
@@ -150,6 +178,7 @@ export async function loadBuyingPowerHistory(
   }
   const sales = parseSales(salesData);
   if (sales.length === 0) {
+    if (!await consentIsCurrent(supabase, shopId, customerId)) return null;
     return { sales, repayments: [] };
   }
 
@@ -162,6 +191,9 @@ export async function loadBuyingPowerHistory(
   if (repaymentsError) {
     throw new LenderDataAccessError("Could not load repayment history");
   }
+
+  // WHY: Recheck just before disclosure so a revoke during history loading fails closed.
+  if (!await consentIsCurrent(supabase, shopId, customerId)) return null;
 
   return {
     sales,

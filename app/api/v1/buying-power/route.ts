@@ -2,7 +2,11 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { calculateBuyingPower } from "@/lib/buyingPower";
 import { checkRateLimit, getClientIp, RATE_LIMITS } from "@/lib/rateLimit";
 import { lenderQuerySchema } from "@/lib/validation";
-import { LenderDataAccessError, loadBuyingPowerHistory } from "@/lib/lenderData";
+import {
+  LenderConsentRequiredError,
+  LenderDataAccessError,
+  loadBuyingPowerHistory,
+} from "@/lib/lenderData";
 
 function jsonResponse(
   body: Record<string, unknown>,
@@ -60,7 +64,7 @@ export async function GET(request: Request): Promise<Response> {
 
   const now = new Date();
   try {
-    const history = await loadBuyingPowerHistory(query.data.shop, query.data.customer, now);
+    const history = await loadBuyingPowerHistory(query.data.shop, query.data.customer);
     if (!history) {
       return jsonResponse({ error: "Shop customer not found" }, 404);
     }
@@ -73,6 +77,9 @@ export async function GET(request: Request): Promise<Response> {
       demo: true,
     });
   } catch (error) {
+    if (error instanceof LenderConsentRequiredError) {
+      return jsonResponse({ error: "Customer consent is required" }, 403);
+    }
     if (error instanceof LenderDataAccessError) {
       return jsonResponse({ error: "Buying-power data is temporarily unavailable" }, 503);
     }

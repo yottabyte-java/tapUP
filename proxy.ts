@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { getSupabaseProjectUrl } from "@/lib/supabase/projectUrl";
 
 function isProtectedPath(pathname: string): boolean {
   return pathname === "/shop"
@@ -11,21 +12,21 @@ function isProtectedPath(pathname: string): boolean {
 }
 
 function applySecurityHeaders(response: NextResponse): NextResponse {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const connectSources = ["'self'"];
-  if (supabaseUrl) {
-    try {
-      const url = new URL(supabaseUrl);
-      if (url.protocol === "https:" || url.protocol === "http:") {
-        connectSources.push(url.origin);
-        connectSources.push(`${url.protocol === "https:" ? "wss:" : "ws:"}//${url.host}`);
-      }
-    } catch {
-      // WHY: An invalid public URL must not become executable CSP source text.
-    }
+  try {
+    const url = new URL(getSupabaseProjectUrl());
+    connectSources.push(url.origin);
+    connectSources.push(`${url.protocol === "https:" ? "wss:" : "ws:"}//${url.host}`);
+  } catch {
+    // WHY: Invalid Supabase configuration must not become executable CSP source text.
   }
   if (process.env.NODE_ENV === "development") {
     connectSources.push("ws:");
+  }
+  const scriptSources = ["'self'", "'unsafe-inline'"];
+  // WHY: React's development error tooling uses eval(); this directive is intentionally absent in production.
+  if (process.env.NODE_ENV === "development") {
+    scriptSources.push("'unsafe-eval'");
   }
 
   // WHY: CSP limits executable, connectable, and embeddable content; Supabase is the only external app endpoint.
@@ -36,7 +37,7 @@ function applySecurityHeaders(response: NextResponse): NextResponse {
     "font-src 'self' data:",
     "img-src 'self' data: blob:",
     "media-src 'self' blob:",
-    "script-src 'self' 'unsafe-inline'",
+    `script-src ${scriptSources.join(" ")}`,
     "style-src 'self' 'unsafe-inline'",
     "object-src 'none'",
     "base-uri 'self'",
@@ -75,13 +76,19 @@ export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
   const pathname = request.nextUrl.pathname;
   const isProtected = isProtectedPath(pathname);
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!isProtected) {
     return applySecurityHeaders(response);
   }
-  if (!supabaseUrl || !supabaseAnonKey) {
+  if (!supabaseAnonKey) {
+    return applySecurityHeaders(new NextResponse("Authentication is unavailable.", { status: 503 }));
+  }
+
+  let supabaseUrl: string;
+  try {
+    supabaseUrl = getSupabaseProjectUrl();
+  } catch {
     return applySecurityHeaders(new NextResponse("Authentication is unavailable.", { status: 503 }));
   }
 

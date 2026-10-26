@@ -4,7 +4,10 @@ import { connection } from "next/server";
 import { Suspense } from "react";
 import { z } from "zod";
 import { LedgerDashboard, type LedgerData } from "@/components/CustomerRow";
+import { ShopAccountMenu } from "@/components/ShopAccountMenu";
 import { createClient } from "@/lib/supabase/server";
+import { calculateTodayTakings } from "@/lib/ledger";
+import { calculateBuyingPower } from "@/lib/buyingPower";
 
 const profileSchema = z.object({
   role: z.enum(["shop_owner", "customer"]),
@@ -32,6 +35,7 @@ const saleSchema = z.object({
   method: z.enum(["tab", "demo_card", "cash", "pending"]),
   status: z.enum(["pending", "tab_requested", "approved", "paid", "repaid", "expired", "cancelled"]),
   paid_now_cents: z.number().int().nonnegative(),
+  paid_now_method: z.enum(["cash", "demo_card"]).nullable(),
   paid_now_confirmed_at: z.string().nullable(),
   tab_cents: z.number().int().nonnegative(),
   created_at: z.string().datetime({ offset: true }),
@@ -46,20 +50,10 @@ const repaymentSchema = z.object({
 });
 
 const PAGE_SIZE = 1_000;
-const JOHANNESBURG_TIME_ZONE = "Africa/Johannesburg";
 
 type Customer = z.infer<typeof customerSchema>;
 type Sale = z.infer<typeof saleSchema>;
 type Repayment = z.infer<typeof repaymentSchema>;
-
-function dateKey(date: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: JOHANNESBURG_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
-}
 
 async function loadAllSales(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -69,7 +63,7 @@ async function loadAllSales(
   for (let offset = 0; ; offset += PAGE_SIZE) {
     const { data, error } = await supabase
       .from("sales")
-      .select("id, shop_customer_id, total_cents, method, status, paid_now_cents, paid_now_confirmed_at, tab_cents, created_at, due_at")
+      .select("id, shop_customer_id, total_cents, method, status, paid_now_cents, paid_now_method, paid_now_confirmed_at, tab_cents, created_at, due_at")
       .eq("shop_id", shopId)
       .order("created_at", { ascending: false })
       .range(offset, offset + PAGE_SIZE - 1);
@@ -105,7 +99,10 @@ function DataUnavailable() {
   return (
     <main className="flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-white/10 bg-card px-5 py-8 text-center">
-        <h1 className="text-lg font-semibold">Ledger</h1>
+        <header className="flex w-full items-center justify-between">
+          <h1 className="text-lg font-semibold">Ledger</h1>
+          <ShopAccountMenu />
+        </header>
         <p className="mt-3 text-sm text-red-200" role="alert">
           We couldn&apos;t load your shop records. Please try again.
         </p>
@@ -124,7 +121,10 @@ function NoShop() {
   return (
     <main className="flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-white/10 bg-card px-5 py-8 text-center">
-        <h1 className="text-lg font-semibold">Ledger</h1>
+        <header className="flex w-full items-center justify-between">
+          <h1 className="text-lg font-semibold">Ledger</h1>
+          <ShopAccountMenu />
+        </header>
         <p className="mt-3 text-sm text-foreground/70" role="alert">
           We couldn&apos;t find a shop linked to this owner account.
         </p>
@@ -207,16 +207,13 @@ async function LedgerContent() {
     }
   }
 
-  let todayTakingsCents = 0;
-  const todayKey = dateKey(now);
+  let todayTakingsCents: number;
+  try {
+    todayTakingsCents = calculateTodayTakings(sales, repayments, now);
+  } catch {
+    return <DataUnavailable />;
+  }
   for (const sale of sales) {
-    const hasConfirmedImmediatePayment = sale.paid_now_confirmed_at !== null
-      && dateKey(new Date(sale.paid_now_confirmed_at)) === todayKey
-      && (sale.status === "paid" || sale.status === "approved");
-    if (hasConfirmedImmediatePayment) {
-      todayTakingsCents += sale.paid_now_cents;
-    }
-
     if (
       sale.status === "approved"
       && sale.shop_customer_id
@@ -228,13 +225,6 @@ async function LedgerContent() {
       owedByCustomer.set(sale.shop_customer_id, nextOwed);
     }
   }
-
-  for (const repayment of repayments) {
-    if (dateKey(new Date(repayment.paid_at)) === todayKey) {
-      todayTakingsCents += repayment.amount_cents;
-    }
-  }
-  if (!Number.isSafeInteger(todayTakingsCents)) return <DataUnavailable />;
 
   const customerRows: LedgerData["customers"] = customers.map((customer) => {
     const outstandingSales = sales
@@ -256,7 +246,17 @@ async function LedgerContent() {
       id: customer.id,
       displayName: customer.display_name,
       phone: customer.customer_phone,
-      limitCents: customer.credit_limit_cents,
+      // WHY: The cached limit is only updated by some mutations; display the same history-based rule as /me and approval.
+      limitCents: calculateBuyingPower({
+        sales: sales.filter((sale) => sale.shop_customer_id === customer.id).map((sale) => ({
+          id: sale.id, createdAt: sale.created_at, totalCents: sale.total_cents, method: sale.method,
+          status: sale.status, tabCents: sale.tab_cents, paidNowCents: sale.paid_now_cents,
+          paidNowMethod: sale.paid_now_method, dueAt: sale.due_at,
+        })),
+        repayments: (repaymentsByCustomer.get(customer.id) ?? []).map((payment) => ({
+          saleId: payment.sale_id, amountCents: payment.amount_cents, paidAt: payment.paid_at, onTime: payment.on_time,
+        })),
+      }, now).limitCents,
       owedCents: owedByCustomer.get(customer.id) ?? 0,
       late,
       outstandingSales,

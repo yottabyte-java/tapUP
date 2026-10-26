@@ -1,13 +1,19 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { connection } from "next/server";
 import { Suspense } from "react";
 import { z } from "zod";
 import { LimitMeter } from "@/components/LimitMeter";
+import { formatRand } from "@/lib/money";
+import { CustomerAccountActivity } from "@/components/CustomerAccountActivity";
+import { CustomerAccountHeader } from "@/components/CustomerAccountHeader";
+import { CustomerPurchaseEntry } from "@/components/CustomerPurchaseEntry";
 import { WhyLimit } from "@/components/WhyLimit";
-import { calculateBuyingPower, explainLimit, type BuyingPowerHistory } from "@/lib/buyingPower";
-import { likelyToNeedTab } from "@/lib/forecast";
+import { calculateBuyingPower, explainLimit, hasCompletedPurchase, type BuyingPowerHistory } from "@/lib/buyingPower";
+import { forecastNextWeekSpend, hasEnoughForecastHistory, likelyToNeedTab } from "@/lib/forecast";
 import { createClient } from "@/lib/supabase/server";
+import { setLenderSharingConsent } from "@/lib/actions/lenderConsent";
 
 const profileSchema = z.object({
   role: z.enum(["shop_owner", "customer"]),
@@ -19,6 +25,7 @@ const databaseUuidSchema = z.string().regex(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-
 const customerLinksSchema = z.array(z.object({
   id: databaseUuidSchema,
   shop_id: databaseUuidSchema,
+  lender_sharing_consent_at: z.string().nullable(),
 }));
 
 const shopsSchema = z.array(z.object({
@@ -67,13 +74,17 @@ function logFailure(step: string, error: unknown, fallbackMessage = "Response fa
 }
 
 type BuyingPowerCardData = {
+  history: BuyingPowerHistory;
   id: string;
   shopName: string;
+  lenderSharingConsent: boolean;
   limitCents: number;
   level: number;
   nextLimitCents: number;
   reasons: string[];
   forecast: ReturnType<typeof likelyToNeedTab>;
+  forecastSpendCents: number | null;
+  hasCompletedHistory: boolean;
 };
 
 async function loadSales(
@@ -124,7 +135,7 @@ function DataUnavailable() {
   return (
     <main className="flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col justify-center rounded-[1.4rem] border border-teal/70 px-5 py-8 text-center">
-        <h1 className="text-lg font-semibold">Your Buying Power</h1>
+        <CustomerAccountHeader />
         <p className="mt-3 text-sm text-red-200" role="alert">
           We couldn&apos;t load your buying-power details. Please try again.
         </p>
@@ -141,11 +152,18 @@ function DataUnavailable() {
 
 function NoShopLinked() {
   return (
-    <main className="flex min-h-full flex-col px-3 py-3">
-      <section className="flex flex-1 flex-col justify-center rounded-[1.4rem] border border-teal/70 px-5 py-8 text-center">
-        <h1 className="text-lg font-semibold">Your Buying Power</h1>
-        <p className="mt-3 text-sm leading-relaxed text-foreground/75">
-          Your account is not linked to a shop yet. Ask the shop owner to link your customer record.
+    <main className="customer-buying-power-layout flex min-h-full flex-col px-3 py-3">
+      <section className="flex flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-4 py-5">
+        <CustomerAccountHeader description="A separate record for each shop" />
+        <div className="rounded-2xl bg-card p-4">
+          <h2 className="text-sm font-semibold">Buying power not established yet</h2>
+          <p className="mt-2 text-sm leading-relaxed text-foreground/70">
+            There are no shop records, tabs, purchases, or repayments on this account yet. Scan a shop&apos;s purchase QR and give consent to start a shop-specific record.
+          </p>
+        </div>
+        <CustomerPurchaseEntry />
+        <p className="mt-4 text-xs leading-relaxed text-foreground/60">
+          Buying power is based on completed purchases and repayments at each shop. A new record starts at R0 until a completed purchase is recorded.
         </p>
       </section>
     </main>
@@ -153,6 +171,13 @@ function NoShopLinked() {
 }
 
 function ShopBuyingPower({ card }: { card: BuyingPowerCardData }) {
+  async function updateLenderConsent(formData: FormData) {
+    "use server";
+    const consent = formData.get("consent") === "true";
+    await setLenderSharingConsent({ shopCustomerId: card.id, consent });
+    revalidatePath("/me");
+  }
+
   return (
     <section aria-labelledby={`buying-power-${card.id}`} className="rounded-2xl border border-white/10 bg-card p-4">
       <h2 className="mb-3 text-sm font-semibold text-foreground/80" id={`buying-power-${card.id}`}>
@@ -163,16 +188,45 @@ function ShopBuyingPower({ card }: { card: BuyingPowerCardData }) {
         limitCents={card.limitCents}
         nextLimitCents={card.nextLimitCents}
       />
-      <WhyLimit reasons={card.reasons} />
-      {card.forecast.likely && (
-        <aside className="mt-5 flex items-start gap-3 rounded-xl border border-teal/50 bg-[#142329] p-3.5">
-          <span aria-hidden="true" className="mt-0.5 text-lg text-amber">▣</span>
-          <div>
-            <h3 className="text-sm font-semibold">You may need a tab around month end</h3>
-            <p className="mt-1 text-xs leading-relaxed text-foreground/70">{card.forecast.reason}</p>
-          </div>
-        </aside>
+      {!card.hasCompletedHistory && (
+        <p className="mt-3 rounded-xl bg-bg p-3 text-xs leading-relaxed text-foreground/75">
+          Not enough completed history yet. Your buying power remains at R0 until your first purchase is completed at this shop.
+        </p>
       )}
+      <WhyLimit reasons={card.reasons} />
+      <CustomerAccountActivity history={card.history} />
+      <div className="mt-5 border-t border-white/10 pt-4">
+        <p className="text-xs leading-relaxed text-foreground/70">
+          Allow the demo lender API to receive this shop&apos;s buying-power amount and explanation.
+          This does not share your name, phone number, or transaction history.
+        </p>
+        <form action={updateLenderConsent} className="mt-3">
+          <input name="consent" type="hidden" value={card.lenderSharingConsent ? "false" : "true"} />
+          <button className="min-h-10 rounded-full border border-teal/50 px-4 text-xs font-semibold" type="submit">
+            {card.lenderSharingConsent ? "Revoke lender sharing" : "Allow lender sharing"}
+          </button>
+          <span className="ml-3 text-xs text-foreground/60" role="status">
+            {card.lenderSharingConsent ? "Sharing allowed" : "Sharing off"}
+          </span>
+        </form>
+      </div>
+      <aside aria-label="Spending estimate" className="mt-5 rounded-xl border border-teal/50 bg-[#142329] p-3.5">
+        <h3 className="text-sm font-semibold">Your spending insight</h3>
+        {card.forecastSpendCents === null ? (
+          <p className="mt-1 text-xs leading-relaxed text-foreground/70">
+            Not enough history to estimate next week&apos;s spend. We need at least one completed purchase in each of the last four weeks.
+          </p>
+        ) : (
+          <>
+            <p className="mt-1 text-xs leading-relaxed text-foreground/70">
+              Estimated next-week spend: {formatRand(card.forecastSpendCents)}. This is a four-week average estimate, not a guarantee.
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-foreground/70">
+              {card.forecast.likely ? "You may need a tab around month end." : card.forecast.reason}
+            </p>
+          </>
+        )}
+      </aside>
     </section>
   );
 }
@@ -214,7 +268,7 @@ async function BuyingPowerContent() {
   // WHY: RLS limits these links to the signed-in customer, preserving a separate limit for each shop.
   const { data: linkData, error: linksError } = await supabase
     .from("shop_customers")
-    .select("id, shop_id")
+    .select("id, shop_id, lender_sharing_consent_at")
     .eq("customer_profile_id", user.id)
     .eq("status", "active");
   if (linksError) {
@@ -348,24 +402,26 @@ async function BuyingPowerContent() {
     };
     const buyingPower = calculateBuyingPower(history, now);
     cards.push({
+      history,
       id: link.id,
       shopName,
+      lenderSharingConsent: link.lender_sharing_consent_at !== null,
       limitCents: buyingPower.limitCents,
       level: buyingPower.level,
       nextLimitCents: buyingPower.nextLimitCents,
       reasons: explainLimit(buyingPower),
       forecast: likelyToNeedTab(history, now),
+      forecastSpendCents: hasEnoughForecastHistory(history, now) ? forecastNextWeekSpend(history, now) : null,
+      hasCompletedHistory: hasCompletedPurchase(history, now),
     });
   }
 
   return (
-    <main className="flex min-h-full flex-col px-3 py-3">
+    <main className="customer-buying-power-layout flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-4 py-5">
-        <header className="mb-5">
-          <h1 className="text-lg font-semibold">Your Buying Power</h1>
-          <p className="mt-1 text-xs text-foreground/65">A separate record for each shop</p>
-        </header>
-        <div className="space-y-4">
+        <CustomerAccountHeader description="A separate record for each shop" />
+        <CustomerPurchaseEntry />
+        <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
           {cards.map((card) => <ShopBuyingPower card={card} key={card.id} />)}
         </div>
       </section>
@@ -377,7 +433,7 @@ function BuyingPowerLoading() {
   return (
     <main className="flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-4 py-5">
-        <h1 className="text-lg font-semibold">Your Buying Power</h1>
+        <CustomerAccountHeader />
         <p className="mt-3 text-sm text-foreground/70" role="status">
           Loading your shop records…
         </p>

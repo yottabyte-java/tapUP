@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { forecastNextWeekSpend, likelyToNeedTab } from "@/lib/forecast";
+import { forecastNextWeekSpend, hasEnoughForecastHistory, likelyToNeedTab } from "@/lib/forecast";
 import type { BuyingPowerHistory } from "@/lib/buyingPower";
 import { seedHistories, seedNow } from "./seedHistory";
 
@@ -28,6 +28,16 @@ describe("spend and tab-need forecasts", () => {
     };
 
     expect(forecastNextWeekSpend(history, seedNow)).toBe(50_000);
+    expect(hasEnoughForecastHistory(history, seedNow)).toBe(true);
+  });
+
+  it("withholds a four-week estimate until each of the four weeks has a completed purchase", () => {
+    const history: BuyingPowerHistory = {
+      sales: [cashSale("week-one", 2, 10_000), cashSale("week-two", 9, 10_000), cashSale("week-three", 16, 10_000)],
+      repayments: [],
+    };
+
+    expect(hasEnoughForecastHistory(history, seedNow)).toBe(false);
   });
 
   it("predicts a tab from a purchase pattern near month end", () => {
