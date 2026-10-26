@@ -6,17 +6,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 const container = process.env.TAPUP_TEST_POSTGRES_CONTAINER;
 const database = `tapup_cash_${randomUUID().replaceAll("-", "")}`;
 let databaseCreated = false;
-function args(db = database) {
+function args(db = database, applicationName = "cash-test") {
   if (!container || !/^[a-zA-Z0-9_-]+$/.test(container)) throw new Error("Disposable PostgreSQL container required");
-  return ["exec", "-i", container, "psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", db];
+  if (!/^[a-zA-Z0-9_-]+$/.test(applicationName)) throw new Error("Unsafe local PostgreSQL application name");
+  // WHY: PGAPPNAME is sent in libpq's startup packet, so pg_stat_activity can identify the connection before its first SQL statement runs.
+  return ["exec", "-i", "-e", `PGAPPNAME=${applicationName}`, container, "psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", db];
 }
 function sql(query: string, db = database, name = "cash-test") {
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error("Unsafe local PostgreSQL application name");
-  return execFileSync("docker", args(db), { input: `SET application_name = '${name}';\n${query}`, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 }).trim();
+  return execFileSync("docker", args(db, name), { input: query, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 }).trim();
 }
 function session(query: string, name: string, keepOpen = false) {
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error("Unsafe local PostgreSQL application name");
-  const child = spawn("docker", args(database), { timeout: 30_000 });
+  const child = spawn("docker", args(database, name), { timeout: 30_000 });
   let stdout = "", stderr = "";
   child.stdout.on("data", (chunk) => { stdout += chunk; });
   child.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -24,7 +26,7 @@ function session(query: string, name: string, keepOpen = false) {
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout: stdout.trim(), stderr }));
   });
-  child.stdin.write(`SET statement_timeout = '25s';\nSET application_name = '${name}';\n${query}\n`);
+  child.stdin.write(`SET statement_timeout = '25s';\n${query}\n`);
   if (!keepOpen) child.stdin.end();
   return { child, done };
 }
@@ -32,29 +34,40 @@ async function waitForSessions(
   names: string[],
   expected: "holds_row_lock" | "blocked",
   running: Array<{ name: string; process: ReturnType<typeof session> }> = [],
+  blockerNames: string[] = [],
 ) {
   if (names.length === 0 || names.some((name) => !/^[a-zA-Z0-9_-]+$/.test(name))) {
     throw new Error("Unsafe local PostgreSQL session name");
   }
   const appNames = names.map((name) => `'${name}'`).join(",");
+  if (blockerNames.some((name) => !/^[a-zA-Z0-9_-]+$/.test(name))) throw new Error("Unsafe blocker session name");
+  if (expected === "blocked" && blockerNames.length === 0) throw new Error("Blocked-state check requires a named blocker");
   const condition = expected === "holds_row_lock"
     ? "a.xact_start IS NOT NULL AND EXISTS (SELECT 1 FROM pg_catalog.pg_locks AS l WHERE l.pid = a.pid AND l.locktype = 'advisory' AND l.granted)"
-    : "a.state = 'active' AND a.wait_event_type = 'Lock' AND a.wait_event IS NOT NULL AND pg_catalog.cardinality(pg_catalog.pg_blocking_pids(a.pid)) > 0";
-  // WHY: The advisory barrier proves the row lock was acquired; wait_event_type plus blocker PIDs proves each writer is in the lock queue, including waiters blocked behind another contender.
+    : `a.state = 'active' AND a.wait_event_type = 'Lock' AND a.wait_event IS NOT NULL AND EXISTS (
+      SELECT 1 FROM pg_catalog.pg_stat_activity AS blocker
+      WHERE blocker.application_name IN (${blockerNames.map((name) => `'${name}'`).join(",")})
+        AND blocker.pid = ANY(pg_catalog.pg_blocking_pids(a.pid)))`;
+  // WHY: The advisory barrier proves the designated row lock is held; each contender must then be observed waiting on that lock-holder or an earlier contender in the same queue.
   try {
     sql(`DO $wait$
     DECLARE attempt integer; found_sessions integer; observed text;
     BEGIN
       FOR attempt IN 1..800 LOOP
+        -- WHY: PostgreSQL caches statistics snapshots within a transaction; refresh activity/lock views on every poll.
+        PERFORM pg_catalog.pg_stat_clear_snapshot();
         SELECT count(*) INTO found_sessions
           FROM pg_catalog.pg_stat_activity AS a
           WHERE a.application_name IN (${appNames}) AND ${condition};
         IF found_sessions = ${names.length} THEN RETURN; END IF;
         PERFORM pg_catalog.pg_sleep(0.025);
       END LOOP;
+      PERFORM pg_catalog.pg_stat_clear_snapshot();
       SELECT pg_catalog.string_agg(
-        pg_catalog.format('%s state=%s wait=%s:%s blockers=%s', a.application_name, a.state,
-          a.wait_event_type, a.wait_event, pg_catalog.pg_blocking_pids(a.pid)), '; ')
+        pg_catalog.format('%s pid=%s state=%s xact_start=%s advisory_grants=%s query=%s wait=%s:%s blockers=%s blocker_names=%s', a.application_name, a.pid,
+          a.state, a.xact_start, (SELECT count(*) FROM pg_catalog.pg_locks AS l WHERE l.pid=a.pid AND l.locktype='advisory' AND l.granted), a.query, a.wait_event_type, a.wait_event, pg_catalog.pg_blocking_pids(a.pid),
+          (SELECT pg_catalog.string_agg(b.application_name, ',') FROM pg_catalog.pg_stat_activity AS b
+            WHERE b.pid = ANY(pg_catalog.pg_blocking_pids(a.pid)))), '; ')
         INTO observed
         FROM pg_catalog.pg_stat_activity AS a
         WHERE a.application_name IN (${appNames});
@@ -202,7 +215,7 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
         const write = session(lock === "assignment"
           ? query.replace("SET paid_now_confirmed_at=", `SET shop_customer_id='${f.customer}',paid_now_confirmed_at=`)
           : query, name);
-        await waitForSessions([name], "blocked", [{ name, process: write }]);
+        await waitForSessions([name], "blocked", [{ name, process: write }], [`${name}_block`]);
         expect(sql(`SELECT expires_at > clock_timestamp() FROM sales WHERE id='${f.sale}'`)).toBe("t");
         // WHY: Release only after the DB's expiry boundary, not after an assumed wall-clock sleep.
         sql(`SELECT pg_sleep(greatest(0,extract(epoch FROM expires_at-clock_timestamp()))+0.05) FROM sales WHERE id='${f.sale}'`);
@@ -225,10 +238,12 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
       try {
         await waitForSessions([`${name}_block`], "holds_row_lock", [{ name: `${name}_block`, process: blocker }]);
         const query = confirm(f);
-        const a = session(query, `${name}_a`), b = session(query, `${name}_b`);
-        await waitForSessions([`${name}_a`, `${name}_b`], "blocked", [
-          { name: `${name}_a`, process: a }, { name: `${name}_b`, process: b },
-        ]);
+        // WHY: Establish the first wait before launching the second contender; otherwise CI startup scheduling can leave one psql process at ClientRead when the barrier observation begins.
+        const aName = `${name}_a`, bName = `${name}_b`, blockerName = `${name}_block`;
+        const a = session(query, aName);
+        await waitForSessions([aName], "blocked", [{ name: aName, process: a }], [blockerName]);
+        const b = session(query, bName);
+        await waitForSessions([bName], "blocked", [{ name: bName, process: b }], [blockerName, aName]);
         blocker.child.stdin.end("COMMIT;\n");
         const results = await Promise.all([a.done, b.done]);
         expect(results.map((r) => r.code)).toEqual([0, 0]);
@@ -256,7 +271,7 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
              paid_now_cents=7500,tab_cents=0,paid_now_method='demo_card',paid_now_confirmed_at=clock_timestamp()
            WHERE id='${f.sale}';`;
       const write = session(transitionSql, name);
-      await waitForSessions([name], "blocked", [{ name, process: write }]);
+      await waitForSessions([name], "blocked", [{ name, process: write }], [`${name}_block`]);
       waitForQrExpiry(f.sale);
       blocker.child.stdin.end("COMMIT;\n");
       expect((await blocker.done).code).toBe(0);
