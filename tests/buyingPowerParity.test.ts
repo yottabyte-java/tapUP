@@ -52,13 +52,16 @@ describe.skipIf(!container)("PostgreSQL buying-power parity and existing approva
     `);
   });
 
-  it("reapplies and transactionally rehearses the floor migration without changing its installed definition", () => {
+  it("replays the ordered approval migrations and transactionally rehearses the floor migration", () => {
     const definition = "SELECT pg_get_functiondef('public.approve_tab_atomic(uuid,uuid,uuid,uuid,text,boolean,boolean)'::regprocedure)";
     const before = sql(definition);
-    const migration = readFileSync("supabase/migrations/202610250001_align_buying_power_floor.sql", "utf8");
-    sql(migration);
+    const floorMigration = readFileSync("supabase/migrations/202610250001_align_buying_power_floor.sql", "utf8");
+    const currentMigration = readFileSync("supabase/migrations/202610260003_complete_redeemed_qr_requests.sql", "utf8");
+    // WHY: Reapplying an earlier migration alone would intentionally replace later fixes; verify the ordered chain instead.
+    sql(floorMigration);
+    sql(currentMigration);
     expect(sql(definition)).toBe(before);
-    sql(`BEGIN; ${migration} ROLLBACK;`);
+    sql(`BEGIN; ${floorMigration}\n${currentMigration}\nROLLBACK;`);
     expect(sql(definition)).toBe(before);
   });
 

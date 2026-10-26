@@ -32,7 +32,7 @@ test("welcome screen navigates to the real sign-in form", async ({ page }, testI
   await expect(page).toHaveURL(/\/login$/);
   await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
   await expect(page.getByLabel("Email address")).toHaveAttribute("required", "");
-  await expect(page.getByLabel("Password")).toHaveAttribute("required", "");
+  await expect(page.getByRole("textbox", { name: "Password" })).toHaveAttribute("required", "");
   await page.screenshot({ path: testInfo.outputPath("login.png"), fullPage: true });
 });
 

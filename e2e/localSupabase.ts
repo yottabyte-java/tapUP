@@ -11,7 +11,11 @@ export async function provision() {
   const file = process.env.TAPUP_E2E_STATUS_FILE;
   if (!file) throw new Error("TAPUP_E2E_STATUS_FILE is required; see docs/BROWSER_TESTS.md");
   const status = JSON.parse(readFileSync(file, "utf8"));
-  if (status.API_URL !== "http://127.0.0.1:54321") throw new Error("Disposable loopback Supabase required");
+  const url = new URL(status.API_URL);
+  if (url.protocol !== "http:" || url.hostname !== "127.0.0.1"
+    || !/^\d{1,5}$/.test(url.port) || Number(url.port) < 1024 || Number(url.port) > 65535) {
+    throw new Error("Disposable loopback Supabase required");
+  }
   const admin = createClient(status.API_URL, status.SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
   const users: string[] = [];
   let shopId = "";
@@ -46,7 +50,11 @@ export function localAdmin() {
   const file = process.env.TAPUP_E2E_STATUS_FILE;
   if (!file) throw new Error("TAPUP_E2E_STATUS_FILE is required");
   const status = JSON.parse(readFileSync(file, "utf8"));
-  if (status.API_URL !== "http://127.0.0.1:54321") throw new Error("Disposable loopback Supabase required");
+  const url = new URL(status.API_URL);
+  if (url.protocol !== "http:" || url.hostname !== "127.0.0.1"
+    || !/^\d{1,5}$/.test(url.port) || Number(url.port) < 1024 || Number(url.port) > 65535) {
+    throw new Error("Disposable loopback Supabase required");
+  }
   return createClient(status.API_URL, status.SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 export type Accounts = Pick<Awaited<ReturnType<typeof provision>>, "admin" | "shopId" | "customerId"> & {

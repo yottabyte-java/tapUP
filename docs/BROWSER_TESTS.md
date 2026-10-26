@@ -24,17 +24,19 @@
 
    Set these two shell variables to your own local workdir and private file path
    first. Never print that file or commit it. It contains generated local keys.
-   The harness requires `API_URL` to be exactly `http://127.0.0.1:54321`, plus
+   The harness requires an HTTP API URL on `127.0.0.1` with a local port, plus
    `ANON_KEY` and `SERVICE_ROLE_KEY`. Never add these keys to source; keep raw artifacts private as described below.
 4. Docker must provide the disposable container
-   `supabase_db_tapup-redteam-local-20261024`. PostgreSQL access via
+   `supabase_db_<project-id>`, where `TAPUP_E2E_PROJECT_ID` matches the local
+   Supabase config (defaults to `tapup-redteam-local-20261024`). PostgreSQL access via
    `docker exec … psql -U postgres -d postgres` is required for the expiry-clock
    probe and the narrowly scoped test-failure trigger. Use `DOCKER_HOST` for a
    non-default Unix socket. No hosted SQL is supported.
 5. Run:
 
    ```sh
-   TAPUP_E2E_STATUS_FILE="$TAPUP_LOCAL_STATUS_FILE" npm run test:e2e
+   TAPUP_E2E_STATUS_FILE="$TAPUP_LOCAL_STATUS_FILE" \
+   TAPUP_E2E_PROJECT_ID="tapup-redteam-local-20261024" npm run test:e2e
    npm run test:e2e:report
    ```
 

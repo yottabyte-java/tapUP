@@ -97,6 +97,8 @@ export async function newSale(world: World, qty = 1) {
   await page.getByRole("button", { name: "Charge customer", exact: true }).click();
   const qr = page.getByLabel("QR code for customer payment");
   await expect(qr).toBeVisible();
+  // WHY: The fixed mobile bottom navigation can overlap the QR's lower modules at desktop viewport height.
+  await qr.evaluate((element) => element.scrollIntoView({ block: "center", inline: "center" }));
   const image = await qr.locator("..").screenshot();
   // WHY: Decode the actual screenshot, rather than reading React state or a database token.
   // The scanner bundled with html5-qrcode rejects some valid images; jsQR independently verifies these pixels.

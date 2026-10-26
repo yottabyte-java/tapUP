@@ -6,7 +6,9 @@ import { randomUUID, randomBytes, createHash } from "node:crypto";
 import type { Route } from "@playwright/test";
 
 function localSql(query: string) {
-  return execFileSync("docker", ["exec", "-i", "supabase_db_tapup-redteam-local-20261024", "psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres"],
+  const projectId = process.env.TAPUP_E2E_PROJECT_ID ?? "tapup-redteam-local-20261024";
+  if (!/^tapup-[a-z0-9-]+$/.test(projectId)) throw new Error("Disposable local Supabase project identifier required");
+  return execFileSync("docker", ["exec", "-i", `supabase_db_${projectId}`, "psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres"],
     { input: query, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 async function prime(world: World) {
@@ -187,21 +189,16 @@ test("cash expiry and server validation failures leave financial records unchang
     qr_token_hash: createHash("sha256").update(token).digest("hex"),
     expires_at: new Date(Date.now() + 12_000).toISOString(),
   }).select("id").single());
-  await choosePayment(world, `http://127.0.0.1:3100/pay/${token}`, "Cash");
-  await world.ownerPage.goto("/shop/sell");
-  const cash = world.ownerPage.getByRole("button", { name: /Confirm cash received/ });
-  await expect(cash).toBeEnabled();
-  const before = await saleState(world, sale.id);
-  // WHY: Wait for this fixture's actual DB expiry boundary; never mutate immutable expiry or disable triggers.
+  // WHY: A customer who already redeemed the QR can legitimately finish a cash receipt later;
+  // test expiry before first redemption so the app must reject the stale QR without mutation.
   await expect.poll(() => localSql(`SELECT expires_at <= clock_timestamp() FROM sales WHERE id='${sale.id}'`), { timeout: 15_000 }).toBe("t");
-  await cash.click();
-  await expect(world.ownerPage.getByRole("alert").filter({ hasText: /\S/ })).toContainText("This sale has expired");
-  expect(await saleState(world, sale.id)).toEqual(before);
-  expect(await checked(await world.admin.from("repayments").select("id").eq("sale_id", sale.id))).toHaveLength(0);
-  await world.ownerPage.reload();
-  await expect(world.ownerPage.getByRole("button", { name: /Confirm cash received/ })).toHaveCount(0);
   await world.strangerPage.goto(`http://127.0.0.1:3100/pay/${token}`);
-  await expect(world.strangerPage.getByRole("button", { name: "Cash", exact: true })).toHaveCount(0);
+  await expect(world.strangerPage.getByRole("heading", { name: "This payment link has expired" })).toBeVisible();
+  expect(await saleState(world, sale.id)).toMatchObject({ status: "pending", shop_customer_id: null });
+  expect(await checked(await world.admin.from("sales").select("used_at").eq("id", sale.id).single())).toEqual({ used_at: null });
+  expect(await checked(await world.admin.from("repayments").select("id").eq("sale_id", sale.id))).toHaveLength(0);
+  await world.ownerPage.goto("/shop/sell");
+  await expect(world.ownerPage.getByRole("button", { name: /Confirm cash received/ })).toHaveCount(0);
   const blocked = await requestTab(world);
   const blockedBefore = await saleState(world, blocked.id);
   await checked(await world.admin.from("shop_customers").update({ status: "blocked" }).eq("id", world.customerId));
@@ -253,7 +250,7 @@ test("full cash receipt is recorded once and survives owner/customer refresh", a
     await expect(world.ownerPage.getByRole("button", { name: /Confirm cash received/ })).toHaveCount(0);
     expect(await saleState(world, sale.id)).toEqual(receipt);
     await world.strangerPage.reload();
-    await expect(world.strangerPage.getByRole("region", { name: "Recent activity" })).toContainText("Paid");
+    await expect(world.strangerPage.getByRole("region", { name: "Transaction history" })).toContainText("Paid");
     await world.ownerPage.reload();
     await world.ownerPage.getByRole("link", { name: "Ledger", exact: true }).first().click();
     await expect(world.ownerPage.getByRole("region", { name: "Shop totals" })).toContainText(formatRand(sale.total));

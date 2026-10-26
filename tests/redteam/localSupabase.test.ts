@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { hashPin, verifyPin } from "@/lib/pin";
 
-const PROJECT_ID = "tapup-redteam-local-20261024";
+const PROJECT_ID = process.env.TAPUP_REDTEAM_PROJECT_ID ?? "tapup-redteam-local-20261024";
 const enabled = process.env.TAPUP_REDTEAM_LOCAL === "1";
 
 type TestUser = {
@@ -258,7 +258,10 @@ localSuite("local Supabase red-team integration", () => {
     if (projectId !== PROJECT_ID) throw new Error("Unexpected local red-team project identifier");
     if (parsedUrl.protocol !== "http:"
       || parsedUrl.hostname !== "127.0.0.1"
-      || parsedUrl.port !== "54321"
+      || !/^\d{1,5}$/.test(parsedUrl.port)
+      || Number(parsedUrl.port) < 1024
+      || Number(parsedUrl.port) > 65535
+      || !/^tapup-[a-z0-9-]+$/.test(projectId)
     ) {
       throw new Error("Red-team tests only allow the configured loopback Supabase API URL");
     }
@@ -648,29 +651,33 @@ localSuite("local Supabase red-team integration", () => {
 
     const tokenHashExisting = createHash("sha256").update(randomBytes(16).toString("hex")).digest("hex");
     await createSale({ shopId: fixture.shops.a, totalCents: 1_300, qrTokenHash: tokenHashExisting });
-    const claimExisting = await fixture.sessions.linkMatch.rpc("link_shop_customer_from_sale_with_consent", {
+    // WHY: linkMatch was intentionally linked in the preceding test; use the still-unlinked
+    // confirmed-phone fixture so this assertion exercises the owner-attestation guard.
+    await ensureNoError(await admin.from("shop_customers").update({ customer_phone: "+27825550202" })
+      .eq("id", fixture.customers.linkMismatch));
+    const claimExisting = await fixture.sessions.linkMismatch.rpc("link_shop_customer_from_sale_with_consent", {
       target_token_hash: tokenHashExisting,
       consent_given: true,
     });
     expect(claimExisting.error).toBeTruthy();
     const notYetAttested = await admin.from("shop_customers")
       .select("customer_profile_id, consent_at")
-      .eq("id", fixture.customers.linkMatch).single();
+      .eq("id", fixture.customers.linkMismatch).single();
     expect(notYetAttested.data).toMatchObject({ customer_profile_id: null });
 
     await ensureNoError(await admin.from("shop_customers").update({
       owner_confirmed_at: new Date().toISOString(),
-    }).eq("id", fixture.customers.linkMatch));
-    const attestedClaim = await fixture.sessions.linkMatch.rpc("link_shop_customer_from_sale_with_consent", {
+    }).eq("id", fixture.customers.linkMismatch));
+    const attestedClaim = await fixture.sessions.linkMismatch.rpc("link_shop_customer_from_sale_with_consent", {
       target_token_hash: tokenHashExisting,
       consent_given: true,
     });
     expect(attestedClaim.error).toBeNull();
-    expect(attestedClaim.data).toBe(fixture.customers.linkMatch);
+    expect(attestedClaim.data).toBe(fixture.customers.linkMismatch);
     const claimedRecord = await admin.from("shop_customers")
       .select("customer_profile_id, consent_at")
-      .eq("id", fixture.customers.linkMatch).single();
-    expect(claimedRecord.data).toMatchObject({ customer_profile_id: fixture.users.linkMatch.id });
+      .eq("id", fixture.customers.linkMismatch).single();
+    expect(claimedRecord.data).toMatchObject({ customer_profile_id: fixture.users.linkMismatch.id });
     expect(claimedRecord.data?.consent_at).toBeTruthy();
   });
 
