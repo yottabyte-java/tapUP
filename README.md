@@ -5,23 +5,44 @@ Customers build a shop-specific transaction and repayment history that informs t
 Our goal is to support financial inclusion by making everyday spaza transactions easier to track.
 
 **Live app:** https://tap-up-beryl.vercel.app/  
-**Repository:** https://github.com/yottabyte-java/tapUP
+**GitHub:** https://github.com/yottabyte-java/tapUP
 
 ## Demo accounts
 
-- **Shop owner:** `[Add verified demo email]`
-- **Customer:** `[Add verified demo email]`
-- **Password:** Share verified demo credentials securely; never commit real passwords or secrets.
+| Role | Login |
+|---|---|
+| Shop owner | `[SHOP_OWNER_DEMO_EMAIL]` |
+| Customer | `[CUSTOMER_DEMO_EMAIL]` |
+| Demo password | `[DEMO_PASSWORD_OR_ACCESS_INSTRUCTIONS]` |
+
+Replace these placeholders with working demo credentials before sharing the README publicly. Never commit real secrets.
+
+## Features
+
+- Record sales using a mobile-friendly interface.
+- Manage customer tabs and outstanding balances.
+- Track customer repayments and transaction history.
+- Display customer buying power informed by recorded behaviour.
+- Support a digital workflow for spaza shop owners and customers.
 
 ## What's simulated?
 
-- **Payments:** Simulated for the MVP; no real money is transferred. Stitch integration is on the roadmap.
-- **SMS:** Simulated/not connected to a live SMS gateway; messages are not guaranteed to be delivered.
-- **Buying power:** Uses prototype rules and is not a formal credit score or lending decision.
+- **Payments:** Simulated; no real money is transferred.
+- **SMS:** Simulated; live SMS delivery is not guaranteed.
+- **Buying power:** Uses preliminary prototype rules and is not a formal credit score or lending decision.
+
+## Tech stack
+
+- Next.js and React
+- TypeScript
+- Supabase and PostgreSQL
+- SQL database schema and row-level security
+- Vitest and Playwright
+- Vercel
 
 ## Run locally
 
-Requirements: Node.js, npm, and Supabase credentials for your own development environment.
+**Requirements:** Node.js, npm and a Supabase project configured for development.
 
 ```bash
 git clone https://github.com/yottabyte-java/tapUP.git
@@ -29,25 +50,19 @@ cd tapUP
 npm install
 ```
 
-Copy `.env.example` to `.env.local`, then fill in the required Supabase values using your own development project. Never commit `.env.local` or production credentials.
+Copy `.env.example` to `.env.local` and fill in the required values for your own Supabase project. Keep `.env.local` and all secrets out of version control.
 
 ```bash
 npm run dev
 ```
 
-Open http://localhost:3000. Check `package.json` for available test and verification scripts.
+Open http://localhost:3000.
 
-## Tech stack
-
-- Next.js, React, TypeScript
-- Supabase and PostgreSQL
-- SQL schema, row-level security and database policies
-- Vitest and Playwright for automated testing
-- Vercel deployment
+For available test commands, see `package.json`.
 
 ## Limitations
 
-tapUP is a hackathon MVP, not a production banking or lending platform. Buying-power rules are preliminary and need validation with more shop owners and customers. The initial survey was a **7-person pilot**, not representative market research. Payment and SMS integrations are not live. Do not use the prototype to make real lending decisions.
+tapUP is a working hackathon MVP, not a production banking or lending platform. Buying-power rules need further validation before being used for real credit decisions. Initial user research was a seven-person pilot and should not be treated as representative market research. Payments and SMS are simulated.
 
 ## Documentation
 
@@ -55,6 +70,15 @@ tapUP is a hackathon MVP, not a production banking or lending platform. Buying-p
 - [Agent workflow](AGENTS.md)
 - [Agent prompts](agents/)
 - [Prompt index](prompts/INDEX.md)
+- [All prompts](prompts/ALL_PROMPTS.md)
 - [Project documentation](docs/)
 - [Security review](docs/SECURITY_REVIEW.md)
 - [Design specification](docs/DESIGN_SPEC.md)
+- [Browser regression testing](playwright.config.ts)
+
+---
+
+**Project:** tapUP  
+**Team:** The Self Taughts  
+**Challenge:** Financial Inclusion and Money Confidence  
+**Status:** Hackathon MVP
