@@ -255,21 +255,6 @@ BEGIN
     RAISE EXCEPTION 'A sale QR can only be used once';
   END IF;
 
-  IF OLD.qr_token_hash IS NOT NULL
-    AND OLD.used_at IS NULL
-    AND OLD.expires_at <= now()
-    AND (
-      NEW.status IN ('tab_requested', 'approved', 'paid')
-      OR (
-        OLD.status = 'pending'
-        AND OLD.method = 'pending'
-        AND NEW.method = 'cash'
-      )
-    )
-  THEN
-    RAISE EXCEPTION 'Sale QR has expired';
-  END IF;
-
   IF OLD.status = 'pending'
     AND OLD.method = 'pending'
     AND NEW.method = 'cash'
@@ -445,6 +430,32 @@ BEGIN
     END IF;
   END IF;
 
+  -- WHY: Check QR expiry after acquiring the sale and customer locks so a request queued before
+  -- expiry cannot consume the QR or settle a sale after its five-minute window has ended.
+  IF OLD.qr_token_hash IS NOT NULL
+    AND OLD.used_at IS NULL
+    AND (
+      NEW.status IN ('tab_requested', 'approved', 'paid')
+      OR (
+        OLD.status = 'pending'
+        AND OLD.method = 'pending'
+        AND NEW.method = 'cash'
+      )
+    )
+  THEN
+    IF NEW.shop_customer_id IS NOT NULL THEN
+      PERFORM sc.id
+      FROM public.shop_customers AS sc
+      WHERE sc.id = NEW.shop_customer_id
+        AND sc.shop_id = NEW.shop_id
+      FOR KEY SHARE;
+    END IF;
+
+    IF OLD.expires_at <= pg_catalog.clock_timestamp() THEN
+      RAISE EXCEPTION 'Sale QR has expired' USING ERRCODE = 'P0001';
+    END IF;
+  END IF;
+
   -- WHY: UPDATE has locked the sale, and split tender has now locked its customer.
   -- Transaction/app timestamps can predate those waits; decide using the live DB clock.
   IF OLD.paid_now_confirmed_at IS NULL
@@ -459,7 +470,7 @@ BEGIN
         FOR KEY SHARE;
     END IF;
     cash_received_at := pg_catalog.clock_timestamp();
-    IF OLD.expires_at IS NOT NULL AND OLD.expires_at <= cash_received_at THEN
+    IF OLD.used_at IS NULL AND OLD.expires_at IS NOT NULL AND OLD.expires_at <= cash_received_at THEN
       RAISE EXCEPTION 'Cash request has expired' USING ERRCODE = 'P0001';
     END IF;
     -- WHY: The ledger records the authoritative receipt time, not the pre-lock app time.
@@ -606,7 +617,10 @@ BEGIN
   END IF;
   -- WHY: Start the validity/scoring window after both rows are locked, not before a lock wait.
   approval_now := pg_catalog.clock_timestamp();
-  IF sale_record.expires_at IS NOT NULL AND sale_record.expires_at <= approval_now THEN
+  IF sale_record.used_at IS NULL
+    AND sale_record.expires_at IS NOT NULL
+    AND sale_record.expires_at <= approval_now
+  THEN
     RETURN pg_catalog.jsonb_build_object('ok', false, 'error', 'sale_expired');
   END IF;
   IF customer_record.status <> 'active' OR customer_record.consent_at IS NULL THEN
@@ -747,7 +761,10 @@ BEGIN
   WHERE s.shop_id = target_shop_id AND s.shop_customer_id = target_shop_customer_id
     AND s.status = 'approved';
 
-  IF sale_record.expires_at IS NOT NULL AND sale_record.expires_at <= pg_catalog.clock_timestamp() THEN
+  IF sale_record.used_at IS NULL
+    AND sale_record.expires_at IS NOT NULL
+    AND sale_record.expires_at <= pg_catalog.clock_timestamp()
+  THEN
     RETURN pg_catalog.jsonb_build_object('ok', false, 'error', 'sale_expired');
   END IF;
 

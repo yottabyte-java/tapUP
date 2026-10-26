@@ -51,10 +51,19 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
       ${readFileSync("supabase/schema.sql", "utf8")}
       ${readFileSync("supabase/rls.sql", "utf8")}`);
     const before = sql("SELECT pg_get_functiondef('public.enforce_sale_state_transition()'::regprocedure)");
-    const migration = readFileSync("supabase/migrations/202610250002_guard_cash_confirmation_expiry.sql", "utf8");
-    sql(migration);
-    sql(migration);
+    const approvalBefore = sql("SELECT pg_get_functiondef('public.approve_tab_atomic(uuid,uuid,uuid,uuid,text,boolean,boolean)'::regprocedure)");
+    const priorMigration = readFileSync("supabase/migrations/202610250002_guard_cash_confirmation_expiry.sql", "utf8");
+    const currentMigration = readFileSync("supabase/migrations/202610260001_guard_qr_expiry_after_lock.sql", "utf8");
+    const completionMigration = readFileSync("supabase/migrations/202610260003_complete_redeemed_qr_requests.sql", "utf8");
+    // WHY: Existing installations apply migrations in order; the newest definition must restore the canonical trigger.
+    sql(priorMigration);
+    sql(priorMigration);
+    sql(currentMigration);
+    sql(currentMigration);
+    sql(completionMigration);
+    sql(completionMigration);
     expect(sql("SELECT pg_get_functiondef('public.enforce_sale_state_transition()'::regprocedure)")).toBe(before);
+    expect(sql("SELECT pg_get_functiondef('public.approve_tab_atomic(uuid,uuid,uuid,uuid,text,boolean,boolean)'::regprocedure)")).toBe(approvalBefore);
   });
 
   function fixture(split: boolean, seconds = 60) {
@@ -99,18 +108,17 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
         .toBe(`${split ? "tab_requested" : "paid"}:true`);
     });
 
-    it(`rejects already expired ${label} cash without modifying receipts or state`, () => {
+    it(`finishes an already redeemed ${label} cash request after QR expiry`, () => {
       const f = fixture(split);
       // Historical expiry fixture only; the confirmation itself executes every original trigger.
       sql(`BEGIN; SET LOCAL session_replication_role=replica;
         UPDATE sales SET created_at=now()-interval '2 minutes',expires_at=now()-interval '1 minute' WHERE id='${f.sale}'; COMMIT;`);
-      const before = snapshot(f);
-      expect(() => sql(`UPDATE sales SET paid_now_confirmed_at=now()${split ? "" : ",status='paid'"} WHERE id='${f.sale}'`))
-        .toThrow(/Cash request has expired/);
-      expect(snapshot(f)).toBe(before);
+      expect(sql(`UPDATE sales SET paid_now_confirmed_at=now()${split ? "" : ",status='paid'"} WHERE id='${f.sale}' RETURNING status`))
+        .toBe(split ? "tab_requested" : "paid");
+      expect(sql(`SELECT paid_now_confirmed_at IS NOT NULL FROM sales WHERE id='${f.sale}'`)).toBe("t");
     });
 
-    it.each(split ? ["sale-1", "sale-2", "customer"] : ["sale-1", "sale-2", "assignment"])(`rejects ${label} cash after a lock wait (%s)`, async (lock) => {
+    it.each(split ? ["sale-1", "sale-2", "customer"] : ["sale-1", "sale-2", "assignment"])(`finishes redeemed ${label} cash after a lock wait (%s)`, async (lock) => {
       const f = fixture(split, 4);
       if (lock === "assignment") sql(`UPDATE sales SET shop_customer_id=NULL WHERE id='${f.sale}'`);
       const before = snapshot(f);
@@ -130,9 +138,9 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
         blocker.child.stdin.end("COMMIT;\n");
         expect((await blocker.done).code).toBe(0);
         const result = await write.done;
-        expect(result.code).not.toBe(0);
-        expect(result.stderr).toContain("Cash request has expired");
-        expect(snapshot(f)).toBe(before);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe("1");
+        expect(snapshot(f)).not.toBe(before);
       } finally {
         if (!blocker.child.stdin.destroyed) blocker.child.stdin.end("ROLLBACK;\n");
         await blocker.done;
@@ -159,4 +167,32 @@ describe.skipIf(!container)("PostgreSQL cash confirmation expiry", () => {
       }
     }, 15000);
   }
+
+  it.each(["tab request", "demo-card purchase"])("rejects a %s queued on the customer lock until after QR expiry", async (transition) => {
+    const f = fixture(false, 4);
+    const before = snapshot(f);
+    const name = `qr_expiry_${randomUUID()}`;
+    const blocker = session(`BEGIN; SELECT id FROM shop_customers WHERE id='${f.customer}' FOR UPDATE;`, `${name}_block`, true);
+    try {
+      await waitFor(`SELECT 1 FROM pg_stat_activity WHERE application_name='${name}_block' AND state='idle in transaction'`);
+      const transitionSql = transition === "tab request"
+        ? `UPDATE sales SET shop_customer_id='${f.customer}',method='tab',status='tab_requested',
+             paid_now_cents=0,tab_cents=7500,used_at=clock_timestamp() WHERE id='${f.sale}'`
+        : `UPDATE sales SET shop_customer_id='${f.customer}',method='demo_card',status='paid',
+             paid_now_cents=7500,tab_cents=0,paid_now_method='demo_card',paid_now_confirmed_at=clock_timestamp()
+           WHERE id='${f.sale}'`;
+      const write = session(transitionSql, name);
+      await waitFor(`SELECT 1 FROM pg_stat_activity WHERE application_name='${name}' AND wait_event_type='Lock'`);
+      await delay(4_100);
+      blocker.child.stdin.end("COMMIT;\n");
+      expect((await blocker.done).code).toBe(0);
+      const result = await write.done;
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("Sale QR has expired");
+      expect(snapshot(f)).toBe(before);
+    } finally {
+      if (!blocker.child.stdin.destroyed) blocker.child.stdin.end("ROLLBACK;\n");
+      await blocker.done;
+    }
+  }, 15000);
 });

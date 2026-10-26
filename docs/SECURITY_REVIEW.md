@@ -13,6 +13,17 @@ secure. “TRUE” means supported by current code or the stated test evidence; 
 independent assurance. “FALSE” means the statement overstates or misdescribes the current build.
 “NOT BUILT” means the described control, integration, or verification is absent.
 
+## Implementation update — 2026-10-26
+
+The historic review below describes the repository state at its stated review commit. The current
+working changes add per-shop customer linking from a live purchase QR after Auth phone OTP and
+explicit consent, and move QR expiry validation after row-lock waits. They also add a four-week
+purchase estimate with an explicit history threshold. These changes have not been applied to a
+hosted database or verified against a running local Supabase stack in this session; update the
+historic results only after the disposable database integration suite runs. Phone verification
+depends on configured Supabase Auth delivery, identity attestation remains an in-person owner
+action rather than external KYC, and payment options remain simulated.
+
 ## Review summary
 
 The strongest runtime evidence is from an isolated local Supabase/Postgres stack with synthetic

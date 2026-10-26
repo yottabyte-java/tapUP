@@ -43,7 +43,7 @@ describe("owner request pagination query contract", () => {
     // A cursor depends only on the boundary row, not on counts/offsets that shift
     // when earlier rows are completed or new requests arrive.
     for (const [call, boundary] of [[1, 106], [2, 6]]) {
-      expect(query(call).get("or")).toBe(`(and(or(expires_at.is.null,expires_at.gt.now),or(created_at.lt.${timestamp},and(created_at.eq.${timestamp},id.lt.${id(boundary)}))))`);
+      expect(query(call).get("or")).toBe(`(and(or(expires_at.is.null,expires_at.gt.now,and(status.eq.tab_requested,used_at.not.is.null),and(method.eq.cash,used_at.not.is.null)),or(created_at.lt.${timestamp},and(created_at.eq.${timestamp},id.lt.${id(boundary)}))))`);
       expect(query(call).has("offset")).toBe(false);
     }
     for (let call = 0; call < 3; call++) {
@@ -58,7 +58,7 @@ describe("owner request pagination query contract", () => {
   it("keeps the expiry filter on the newest page and handles an empty queue", async () => {
     fetchPage.mockResolvedValueOnce(respond([]));
     expect(await loadOwnerPaymentPage("shop-a")).toEqual({ sales: [], customers: [], nextCursor: null });
-    expect(query(0).get("or")).toBe("(and(or(expires_at.is.null,expires_at.gt.now)))");
+    expect(query(0).get("or")).toBe("(and(or(expires_at.is.null,expires_at.gt.now,and(status.eq.tab_requested,used_at.not.is.null),and(method.eq.cash,used_at.not.is.null))))");
     expect(fetchPage).toHaveBeenCalledTimes(1);
   });
 
@@ -70,6 +70,7 @@ describe("owner request pagination query contract", () => {
     await loadOwnerPaymentPage("shop-a");
     expect(query(0).get("or")).toBe(query(1).get("or"));
     expect(query(0).get("or")).toContain("expires_at.gt.now");
+    expect(query(0).get("or")).toContain("status.eq.tab_requested,used_at.not.is.null");
   });
 
   it("reads only the page's customer labels in the same shop using the session client", async () => {

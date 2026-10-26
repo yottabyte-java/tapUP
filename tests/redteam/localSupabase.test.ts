@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -129,7 +129,7 @@ async function createShopCustomer(input: {
 
 async function createSale(input: {
   shopId: string;
-  customerId: string;
+  customerId?: string | null;
   totalCents: number;
   qrTokenHash?: string;
   createdAt?: Date;
@@ -140,7 +140,7 @@ async function createSale(input: {
     .from("sales")
     .insert({
       shop_id: input.shopId,
-      shop_customer_id: input.customerId,
+      shop_customer_id: input.customerId ?? null,
       items: [{ productId: "redteam-fixture", name: "Synthetic fixture", unitPriceCents: input.totalCents, qty: 1 }],
       total_cents: input.totalCents,
       ...(input.qrTokenHash ? {
@@ -284,6 +284,10 @@ localSuite("local Supabase red-team integration", () => {
         phoneConfirmed: true,
       }),
       linkNoPhone: await createTestUser("link-no-phone"),
+      linkNew: await createTestUser("link-new", {
+        phone: "+27825550203",
+        phoneConfirmed: true,
+      }),
     };
 
     await Promise.all([
@@ -294,6 +298,7 @@ localSuite("local Supabase red-team integration", () => {
       createProfile(users.linkMatch, "customer"),
       createProfile(users.linkMismatch, "customer"),
       createProfile(users.linkNoPhone, "customer"),
+      createProfile(users.linkNew, "customer"),
     ]);
 
     const shops = {
@@ -580,6 +585,95 @@ localSuite("local Supabase red-team integration", () => {
     expect(rejectedRows.data?.every((row) => row.customer_profile_id === null)).toBe(true);
   });
 
+  it("creates one customer identity per shop from a confirmed-phone purchase QR and reserves that sale", async () => {
+    if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
+    const tokenHashA = createHash("sha256").update(randomBytes(16).toString("hex")).digest("hex");
+    const saleA = await createSale({ shopId: fixture.shops.a, totalCents: 1_000, qrTokenHash: tokenHashA });
+    const linkA = await fixture.sessions.linkNew.rpc("link_shop_customer_from_sale_with_consent", {
+      target_token_hash: tokenHashA,
+      consent_given: true,
+    });
+    expect(linkA.error).toBeNull();
+    expect(typeof linkA.data).toBe("string");
+    const customerA = linkA.data as string;
+    createdCustomerIds.push(customerA);
+
+    const saleARecord = await admin.from("sales").select("shop_customer_id,status,method")
+      .eq("id", saleA).single();
+    expect(saleARecord.data).toEqual({ shop_customer_id: customerA, status: "pending", method: "pending" });
+    const linkedA = await admin.from("shop_customers")
+      .select("customer_profile_id,customer_phone,consent_at")
+      .eq("id", customerA).single();
+    expect(linkedA.data).toMatchObject({
+      customer_profile_id: fixture.users.linkNew.id,
+      customer_phone: "+27825550203",
+    });
+    expect(linkedA.data?.consent_at).toBeTruthy();
+
+    // WHY: Retrying the same live QR as its linked customer is idempotent and must not duplicate the relationship.
+    const retry = await fixture.sessions.linkNew.rpc("link_shop_customer_from_sale_with_consent", {
+      target_token_hash: tokenHashA,
+      consent_given: true,
+    });
+    expect(retry.error).toBeNull();
+    expect(retry.data).toBe(customerA);
+
+    const replay = await fixture.sessions.linkMismatch.rpc("link_shop_customer_from_sale_with_consent", {
+      target_token_hash: tokenHashA,
+      consent_given: true,
+    });
+    expect(replay.error).toBeTruthy();
+
+    const tokenHashB = createHash("sha256").update(randomBytes(16).toString("hex")).digest("hex");
+    await createSale({ shopId: fixture.shops.b, totalCents: 1_100, qrTokenHash: tokenHashB });
+    const linkB = await fixture.sessions.linkNew.rpc("link_shop_customer_from_sale_with_consent", {
+      target_token_hash: tokenHashB,
+      consent_given: true,
+    });
+    expect(linkB.error).toBeNull();
+    expect(linkB.data).not.toBe(customerA);
+    createdCustomerIds.push(linkB.data as string);
+    const links = await admin.from("shop_customers").select("id,shop_id,customer_profile_id")
+      .eq("customer_profile_id", fixture.users.linkNew.id);
+    expect(links.data).toHaveLength(2);
+    expect(new Set(links.data?.map((link) => link.shop_id))).toEqual(new Set([fixture.shops.a, fixture.shops.b]));
+
+    const tokenHashNoPhone = createHash("sha256").update(randomBytes(16).toString("hex")).digest("hex");
+    await createSale({ shopId: fixture.shops.a, totalCents: 1_200, qrTokenHash: tokenHashNoPhone });
+    const unverified = await fixture.sessions.linkNoPhone.rpc("link_shop_customer_from_sale_with_consent", {
+      target_token_hash: tokenHashNoPhone,
+      consent_given: true,
+    });
+    expect(unverified.error).toBeTruthy();
+
+    const tokenHashExisting = createHash("sha256").update(randomBytes(16).toString("hex")).digest("hex");
+    await createSale({ shopId: fixture.shops.a, totalCents: 1_300, qrTokenHash: tokenHashExisting });
+    const claimExisting = await fixture.sessions.linkMatch.rpc("link_shop_customer_from_sale_with_consent", {
+      target_token_hash: tokenHashExisting,
+      consent_given: true,
+    });
+    expect(claimExisting.error).toBeTruthy();
+    const notYetAttested = await admin.from("shop_customers")
+      .select("customer_profile_id, consent_at")
+      .eq("id", fixture.customers.linkMatch).single();
+    expect(notYetAttested.data).toMatchObject({ customer_profile_id: null });
+
+    await ensureNoError(await admin.from("shop_customers").update({
+      owner_confirmed_at: new Date().toISOString(),
+    }).eq("id", fixture.customers.linkMatch));
+    const attestedClaim = await fixture.sessions.linkMatch.rpc("link_shop_customer_from_sale_with_consent", {
+      target_token_hash: tokenHashExisting,
+      consent_given: true,
+    });
+    expect(attestedClaim.error).toBeNull();
+    expect(attestedClaim.data).toBe(fixture.customers.linkMatch);
+    const claimedRecord = await admin.from("shop_customers")
+      .select("customer_profile_id, consent_at")
+      .eq("id", fixture.customers.linkMatch).single();
+    expect(claimedRecord.data).toMatchObject({ customer_profile_id: fixture.users.linkMatch.id });
+    expect(claimedRecord.data?.consent_at).toBeTruthy();
+  });
+
   it("allows a customer to grant and revoke lender sharing only on their own shop record", async () => {
     if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
     const grant = await fixture.sessions.customerA.rpc("set_lender_sharing_consent", {
@@ -708,7 +802,7 @@ localSuite("local Supabase red-team integration", () => {
     expect(receipt.data?.paid_now_confirmed_at).toBeTruthy();
   });
 
-  it.each([false, true])("rejects expired cash through PostgREST without a receipt (split=%s)", async (split) => {
+  it.each([false, true])("finishes a redeemed cash request through PostgREST after QR expiry (split=%s)", async (split) => {
     if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
     const expiresAt = new Date(Date.now() + 3000);
     const saleId = await createSale({ shopId: fixture.shops.a, customerId: fixture.customers.a,
@@ -721,20 +815,27 @@ localSuite("local Supabase red-team integration", () => {
     await delay(Math.max(0, expiresAt.getTime() - Date.now()) + 100);
     const result = await admin.from("sales").update({ paid_now_confirmed_at: new Date().toISOString(),
       ...(split ? {} : { status: "paid" }) }).eq("id", saleId);
-    expect(result.error?.message).toBe("Cash request has expired");
+    expect(result.error).toBeNull();
     const receipt = await admin.from("sales").select("status, paid_now_confirmed_at").eq("id", saleId).single();
-    expect(receipt.data).toEqual({ status, paid_now_confirmed_at: null });
+    expect(receipt.data?.status).toBe(split ? "tab_requested" : "paid");
+    expect(receipt.data?.paid_now_confirmed_at).toBeTruthy();
   }, 10000);
 
   it("atomically approves a valid PIN and rejects duplicate approval requests", async () => {
     if (!fixture || !admin) throw new Error("Test fixtures were not initialized");
     await createCompletedPurchase(fixture.customers.pin);
     await createCompletedPurchase(fixture.customers.pin);
+    const qrCreatedAt = new Date();
     const saleId = await createSale({
       shopId: fixture.shops.a,
       customerId: fixture.customers.pin,
       totalCents: 1_000,
+      qrTokenHash: randomBytes(32).toString("hex"),
+      createdAt: qrCreatedAt,
+      expiresAt: new Date(qrCreatedAt.getTime() + 2_000),
     });
+    await makeTabRequested(saleId, fixture.customers.pin, 1_000);
+    await delay(Math.max(0, qrCreatedAt.getTime() + 2_100 - Date.now()));
 
     const approval = await approveAtomic({
       saleId,

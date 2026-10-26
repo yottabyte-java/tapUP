@@ -88,6 +88,11 @@ function isSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value);
 }
 
+function isSaleQrExpiredError(error: { code?: string; message?: string } | null): boolean {
+  // WHY: Map only the known database expiry result to customer-safe feedback.
+  return error?.code === "P0001" && error.message === "Sale QR has expired";
+}
+
 function parseSaleRecord(value: unknown): SaleRecord | null {
   if (!isRecord(value)) return null;
   if (
@@ -438,6 +443,7 @@ type CustomerPaySaleContext =
     ok: true;
     admin: ReturnType<typeof createAdminClient>;
     sale: SaleRecord;
+    shopName: string;
     shopCustomerId: string;
     limitCents: number;
     availableCents: number;
@@ -467,7 +473,6 @@ async function getCustomerPaySaleContext(input: unknown): Promise<CustomerPaySal
     || verifySaleToken(parsed.data, sale.qrTokenHash, sale.expiresAt, sale.usedAt) !== "ok"
     || sale.status !== "pending"
     || sale.method !== "pending"
-    || sale.shopCustomerId !== null
   ) {
     // WHY: Unknown, expired, used, and otherwise unavailable links get the same public response.
     return { ok: false, error: "invalid_link" };
@@ -483,6 +488,16 @@ async function getCustomerPaySaleContext(input: unknown): Promise<CustomerPaySal
   if (!shopCustomer || shopCustomer.status !== "active" || !shopCustomer.consent_at) {
     return { ok: false, error: "invalid_link" };
   }
+  if (sale.shopCustomerId !== null && sale.shopCustomerId !== shopCustomer.id) {
+    return { ok: false, error: "invalid_link" };
+  }
+
+  const { data: shop, error: shopError } = await customer.admin
+    .from("shops")
+    .select("name")
+    .eq("id", sale.shopId)
+    .maybeSingle();
+  if (shopError || typeof shop?.name !== "string") return { ok: false, error: "unavailable" };
 
   let history: BuyingPowerHistory;
   let buyingPower: ReturnType<typeof calculateBuyingPower>;
@@ -499,6 +514,7 @@ async function getCustomerPaySaleContext(input: unknown): Promise<CustomerPaySal
     ok: true,
     admin: customer.admin,
     sale,
+    shopName: shop.name,
     shopCustomerId: shopCustomer.id,
     limitCents: buyingPower.limitCents,
     availableCents: Math.max(0, buyingPower.limitCents - outstandingCents),
@@ -510,6 +526,7 @@ async function getCustomerPaySaleContext(input: unknown): Promise<CustomerPaySal
 export async function getCustomerPayDetails(input: unknown): Promise<
   ActionFailure | ActionSuccess<{
     totalCents: number;
+    shopName: string;
     limitCents: number;
     availableCents: number;
     level: number;
@@ -525,6 +542,7 @@ export async function getCustomerPayDetails(input: unknown): Promise<
   return {
     ok: true,
     totalCents: context.sale.totalCents,
+    shopName: context.shopName,
     limitCents: context.limitCents,
     availableCents: context.availableCents,
     level: context.level,
@@ -555,7 +573,7 @@ export async function requestCustomerTab(input: unknown): Promise<
   const now = new Date().toISOString();
   const paidNowCents = context.sale.totalCents - tabCents;
   const paidNowMethod = paidNowCents > 0 ? parsed.data.paidNowMethod : null;
-  const { data, error } = await context.admin
+  let request = context.admin
     .from("sales")
     .update({
       shop_customer_id: context.shopCustomerId,
@@ -573,10 +591,12 @@ export async function requestCustomerTab(input: unknown): Promise<
     .eq("status", "pending")
     .eq("method", "pending")
     .is("used_at", null)
-    .gt("expires_at", now)
-    .select("id")
-    .maybeSingle();
-  if (error || !data) return { ok: false, error: "sale_not_payable" };
+    .gt("expires_at", now);
+  request = context.sale.shopCustomerId === null
+    ? request.is("shop_customer_id", null)
+    : request.eq("shop_customer_id", context.shopCustomerId);
+  const { data, error } = await request.select("id").maybeSingle();
+  if (error || !data) return { ok: false, error: isSaleQrExpiredError(error) ? "sale_expired" : "sale_not_payable" };
 
   return {
     ok: true,
@@ -611,7 +631,6 @@ export async function requestCustomerCash(input: unknown): Promise<
     || verifySaleToken(parsed.data, sale.qrTokenHash, sale.expiresAt, sale.usedAt) !== "ok"
     || sale.status !== "pending"
     || sale.method !== "pending"
-    || sale.shopCustomerId !== null
   ) {
     return { ok: false, error: "invalid_link" };
   }
@@ -626,9 +645,12 @@ export async function requestCustomerCash(input: unknown): Promise<
   if (!shopCustomer || shopCustomer.status !== "active" || !shopCustomer.consent_at) {
     return { ok: false, error: "invalid_link" };
   }
+  if (sale.shopCustomerId !== null && sale.shopCustomerId !== shopCustomer.id) {
+    return { ok: false, error: "invalid_link" };
+  }
 
   const now = new Date().toISOString();
-  const { data, error } = await customer.admin
+  let request = customer.admin
     .from("sales")
     .update({
       shop_customer_id: shopCustomer.id,
@@ -644,10 +666,12 @@ export async function requestCustomerCash(input: unknown): Promise<
     .eq("status", "pending")
     .eq("method", "pending")
     .is("used_at", null)
-    .gt("expires_at", now)
-    .select("id")
-    .maybeSingle();
-  if (error || !data) return { ok: false, error: "sale_not_payable" };
+    .gt("expires_at", now);
+  request = sale.shopCustomerId === null
+    ? request.is("shop_customer_id", null)
+    : request.eq("shop_customer_id", shopCustomer.id);
+  const { data, error } = await request.select("id").maybeSingle();
+  if (error || !data) return { ok: false, error: isSaleQrExpiredError(error) ? "sale_expired" : "sale_not_payable" };
 
   return { ok: true, saleId: sale.id, status: "cash_requested" };
 }
@@ -769,7 +793,8 @@ export async function payCash(input: unknown): Promise<
     return { ok: false, error: "unavailable" };
   }
   if (!sale) return { ok: false, error: "sale_not_found" };
-  if (sale.expiresAt !== null && Date.parse(sale.expiresAt) <= Date.now()) {
+  // WHY: QR expiry gates first redemption; an already consumed customer request remains actionable afterward.
+  if (sale.usedAt === null && sale.expiresAt !== null && Date.parse(sale.expiresAt) <= Date.now()) {
     return { ok: false, error: "sale_expired" };
   }
 
@@ -796,20 +821,19 @@ export async function payCash(input: unknown): Promise<
     && sale.paidNowCents > 0
     && sale.paidNowConfirmedAt === null
   ) {
-    let payment = owner.admin
+    const payment = owner.admin
       .from("sales")
       .update({ paid_now_confirmed_at: new Date().toISOString() })
       .eq("id", sale.id)
       .eq("shop_id", owner.shopId)
       .eq("status", "tab_requested")
       .is("paid_now_confirmed_at", null);
-    // WHY: This early filter avoids stale work; the DB trigger rechecks its clock after all row locks.
-    if (sale.expiresAt !== null) payment = payment.gt("expires_at", new Date().toISOString());
+    // WHY: This QR was consumed when the tab was requested; expiry must not strand its cash remainder.
     const { data, error } = await payment.select("id").maybeSingle();
     if (error || !data) return {
       ok: false,
       // WHY: Only this known trigger error becomes expiry feedback; never disclose database details.
-      error: error?.code === "P0001" && error.message === "Cash request has expired"
+      error: error?.code === "P0001" && ["Cash request has expired", "Sale QR has expired"].includes(error.message)
         ? "sale_expired" : "cash_confirmation_failed",
     };
     return { ok: true, saleId: sale.id, status: "tab_requested" };
@@ -850,12 +874,13 @@ export async function payCash(input: unknown): Promise<
   payment = sale.shopCustomerId === null
     ? payment.is("shop_customer_id", null) : payment.eq("shop_customer_id", sale.shopCustomerId);
   payment = sale.usedAt === null ? payment.is("used_at", null) : payment.eq("used_at", sale.usedAt);
-  if (sale.expiresAt !== null) payment = payment.gt("expires_at", new Date().toISOString());
+  // WHY: Keep a live-QR check only for a request not consumed by the customer yet.
+  if (sale.usedAt === null && sale.expiresAt !== null) payment = payment.gt("expires_at", new Date().toISOString());
   const { data, error } = await payment.select("id").maybeSingle();
   if (error || !data) return {
     ok: false,
     // WHY: Lock-wait expiry is authoritative even when the earlier application check passed.
-    error: error?.code === "P0001" && error.message === "Cash request has expired"
+    error: error?.code === "P0001" && ["Cash request has expired", "Sale QR has expired"].includes(error.message)
       ? "sale_expired" : "cash_confirmation_failed",
   };
   return { ok: true, saleId: sale.id, status: "paid" };
@@ -928,7 +953,7 @@ export async function demoPay(input: unknown): Promise<
       .is("paid_now_confirmed_at", null)
       .select("id")
       .maybeSingle();
-    if (error || !data) return { ok: false, error: "demo_payment_failed" };
+    if (error || !data) return { ok: false, error: isSaleQrExpiredError(error) ? "sale_expired" : "demo_payment_failed" };
     // WHY: The payment is a recorded simulation only; no card data or real money moves.
     return { ok: true, saleId: sale.id, status: "tab_requested", simulated: true };
   }
@@ -937,7 +962,7 @@ export async function demoPay(input: unknown): Promise<
     return { ok: false, error: "sale_not_payable_by_demo_card" };
   }
 
-  const { data, error } = await customerContext.admin
+  let request = customerContext.admin
     .from("sales")
     .update({
       shop_customer_id: customerId,
@@ -951,10 +976,12 @@ export async function demoPay(input: unknown): Promise<
     .eq("id", sale.id)
     .eq("shop_id", sale.shopId)
     .eq("status", "pending")
-    .eq("method", "pending")
-    .select("id")
-    .maybeSingle();
-  if (error || !data) return { ok: false, error: "demo_payment_failed" };
+    .eq("method", "pending");
+  request = sale.shopCustomerId === null
+    ? request.is("shop_customer_id", null)
+    : request.eq("shop_customer_id", customerId);
+  const { data, error } = await request.select("id").maybeSingle();
+  if (error || !data) return { ok: false, error: isSaleQrExpiredError(error) ? "sale_expired" : "demo_payment_failed" };
 
   // WHY: Demo payment records an explicitly simulated payment, never a real processor charge.
   return { ok: true, saleId: sale.id, status: "paid", simulated: true };

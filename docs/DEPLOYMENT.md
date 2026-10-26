@@ -26,8 +26,11 @@
 
 ### Release gates
 
-The cash-expiry race is repaired by the post-lock database-clock guard in migration
-`202610250002_guard_cash_confirmation_expiry.sql`; fresh schema contains it too.
+The QR-expiry race is guarded after sale/customer locks by migration
+`202610260001_guard_qr_expiry_after_lock.sql`; migration
+`202610260003_complete_redeemed_qr_requests.sql` keeps already-redeemed requests
+actionable after the QR window and synchronizes the approval RPC with fresh schema.
+Fresh schema contains both fixes.
 Real PostgreSQL tests cover full/split sale-lock waits, split customer-lock waits, full-cash customer-assignment FK waits,
 rollback and duplicate writes. The same-shop refresh/action-outcome defect is also
 repaired, with UI regressions retaining stale-shop protection. These repairs still
@@ -215,11 +218,20 @@ to its current quotas and terms; do not enable paid services automatically.
    and does not backfill cached limits or fix cash expiry. Migration
    `202610250002_guard_cash_confirmation_expiry.sql` separately replaces the existing
    sale-transition trigger function, checking cash expiry after its row locks and
-   stamping receipt time from the database clock. Both definitions are already in
-   the fresh schema. Migration `202610250003_add_lender_sharing_consent.sql` adds
+   stamping receipt time from the database clock. Migration
+   `202610260001_guard_qr_expiry_after_lock.sql` rechecks QR expiry after lock waits;
+   `202610260003_complete_redeemed_qr_requests.sql` preserves completion of an already
+   redeemed cash/tab request after QR expiry and synchronizes the approval RPC with
+   fresh schema. These definitions are already in the fresh schema. Migration
+   `202610250003_add_lender_sharing_consent.sql` adds
    the customer-specific lender-consent column, RPC, and column grant needed by the
    Buying Power screen and lender API. Apply it through the tracked migration workflow
    after confirming the intended project; do not run the SQL directly in a remote editor.
+   The newer `202610260001_guard_qr_expiry_after_lock.sql` migration moves purchase-QR
+   expiry validation after customer-row lock waits. `202610260002_link_customer_from_sale.sql`
+   lets an OTP-confirmed customer create or claim only their shop-specific relationship from
+   a live sale QR with explicit consent. Review and rehearse both on a disposable staging
+   copy, then apply through the tracked migration workflow; this task does not apply hosted SQL.
    See the rehearsal procedure below.
 4. Verify the five application tables have RLS enabled and privileged approval is
    unavailable to browser roles. These read-only checks expose no customer data:
@@ -262,8 +274,11 @@ to its current quotas and terms; do not enable paid services automatically.
    `/pay/[token]` URL while signed in as that customer. The implemented link flow
    calls `auth.updateUser({ phone })`, verifies an actual OTP using
    `verifyOtp({ type: 'phone_change' })`, then asks for consent and calls
-   `link_shop_customer_with_consent`. Auth's confirmed phone must match the active,
-   unlinked record in that shop. The owner must confirm identity before tab approval.
+   `link_shop_customer_from_sale_with_consent`. The database links the Auth-confirmed phone
+   to the exact unclaimed matching record only after owner identity attestation, or creates a
+   shop-specific relationship for the same
+   Auth profile. It does not merge a claimed record or use name/profile-phone matching. The
+   owner must confirm identity before tab approval.
    Email/password login alone does not establish that link. **You must provide a
    controlled phone and working Supabase phone-change verification configuration.**
    Inspect [Supabase phone auth](https://supabase.com/docs/guides/auth/phone-login);
@@ -577,8 +592,10 @@ verification and explicit approval**. No hosted deployment or production migrati
    compatible existing schema. It does not fix cash expiry.
 3. Migration002 replaces `public.enforce_sale_state_transition()` without replacing
    its trigger attachment, permissions or existing guards. It uses `clock_timestamp()`
-   after sale, split-customer and full-cash customer-reference locks, rejects expired cash atomically, and
-   writes the actual database receipt timestamp. It contains no data rewrite.
+   after sale, split-customer and full-cash customer-reference locks, and writes the
+   database receipt timestamp. Migration003 updates the trigger and approval RPC so
+   QR expiry applies to first redemption while consumed cash/tab requests can finish.
+   It preserves the RPC's service-role grant and has no data rewrite.
 4. In staging, run each reviewed migration in a transaction with stop-on-error
    (`psql -X -v ON_ERROR_STOP=1 --single-transaction -f <reviewed-file>` with connection
    configured privately). Compare installed definitions with the fresh schema.

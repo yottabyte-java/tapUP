@@ -38,6 +38,18 @@ Apply these overrides in order:
 Limits stay in R50 increments and never exceed R300. Approval subtracts all outstanding
 approved tab balances from that limit; a displayed limit is not an approval or available balance.
 
+## Customer forecast
+
+The `/me` forecast is a deterministic estimate, not an AI score or credit decision. It sums
+completed purchase totals in the rolling 28-day window and divides by four, rounding to the
+nearest cent. The screen shows the estimate only after at least one completed purchase appears
+in each of the four rolling seven-day age bands. Pending, cancelled and expired requests are
+excluded. The month-end tab insight uses completed tab purchases in the rolling 30-day window
+and flags a prior tab during the last five or first three UTC calendar days of a month. Otherwise
+it reports a possible tab need only when forecast spend is at least 150% of the observed weekly
+cash average. These rules describe recorded behavior; they do not guarantee future spending or
+repayment.
+
 ## Verification and deployment
 
 `npm test` includes receipt, owner action, and low-score regression tests. To run real SQL parity

@@ -299,6 +299,22 @@ describe("security checks", () => {
     expect(createAdminClientMock).toHaveBeenCalledOnce();
   });
 
+  it("limits first-time customer linking to a confirmed phone and a live purchase QR", () => {
+    const rls = readFileSync(resolve(process.cwd(), "supabase/rls.sql"), "utf8");
+    const linkingFunction = rls.match(/CREATE FUNCTION public\.link_shop_customer_from_sale_with_consent\([\s\S]*?\n\$\$;/)?.[0] ?? "";
+
+    expect(linkingFunction).toContain("SECURITY DEFINER");
+    expect(linkingFunction).toContain("SET search_path = ''");
+    expect(linkingFunction).toContain("auth.uid()");
+    expect(linkingFunction).toContain("u.phone_confirmed_at IS NOT NULL");
+    expect(linkingFunction).toContain("FOR UPDATE");
+    expect(linkingFunction).toContain("s.expires_at > pg_catalog.clock_timestamp()");
+    expect(linkingFunction).toContain("consent_given IS DISTINCT FROM true");
+    expect(linkingFunction).toContain("customer_record.owner_confirmed_at IS NULL");
+    expect(rls).toContain("REVOKE ALL ON FUNCTION public.link_shop_customer_from_sale_with_consent(text, boolean)");
+    expect(rls).toContain("GRANT EXECUTE ON FUNCTION public.link_shop_customer_from_sale_with_consent(text, boolean)");
+  });
+
   it("normalizes Auth phones with or without the E.164 plus prefix", () => {
     expect(southAfricanPhoneSchema.parse("082 555 0199")).toBe("+27825550199");
     expect(southAfricanPhoneSchema.parse("+27 82 555 0199")).toBe("+27825550199");

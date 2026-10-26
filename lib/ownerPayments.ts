@@ -32,13 +32,14 @@ export async function loadOwnerSaleState(shopId: string, saleId: string) {
  */
 export async function loadOwnerPaymentPage(shopId: string, cursor: PaymentCursor | null = null) {
   const supabase = createClient();
-  const unexpired = "or(expires_at.is.null,expires_at.gt.now)";
+  // WHY: Expiry blocks QR redemption, not cash confirmation or approval for an already consumed request.
+  const availableRequests = "or(expires_at.is.null,expires_at.gt.now,and(status.eq.tab_requested,used_at.not.is.null),and(method.eq.cash,used_at.not.is.null))";
   const older = cursor
     ? `or(created_at.lt.${cursor.created_at},and(created_at.eq.${cursor.created_at},id.lt.${cursor.id}))` : null;
   const { data, error } = await supabase.from("sales")
     .select("id, shop_customer_id, total_cents, tab_cents, paid_now_cents, paid_now_method, paid_now_confirmed_at, method, status, expires_at, created_at")
     .eq("shop_id", shopId).in("status", ["pending", "tab_requested"])
-    .or(older ? `and(${unexpired},${older})` : `and(${unexpired})`)
+    .or(older ? `and(${availableRequests},${older})` : `and(${availableRequests})`)
     .order("created_at", { ascending: false }).order("id", { ascending: false }).limit(PAGE_SIZE + 1);
   if (error) throw new Error("requests_unavailable");
   const sales: PendingPayment[] = (data ?? []).slice(0, PAGE_SIZE);

@@ -7,29 +7,32 @@ type BarcodeScannerProps = {
   onScan: (barcode: string) => void;
   onManualAdd: () => void;
   onBack?: () => void;
+  mode?: "barcode" | "paymentQr";
 };
 
 type ScannerStatus = "starting" | "scanning" | "fallback";
 
-function cameraFailureMessage(error: unknown): string {
+function cameraFailureMessage(error: unknown, mode: "barcode" | "paymentQr"): string {
+  const manualAction = mode === "paymentQr" ? "enter the payment link manually" : "add items manually";
   const errorName = error instanceof Error ? error.name : "";
 
   if (errorName === "NotAllowedError" || errorName === "PermissionDeniedError") {
-    return "Camera access was denied. Allow camera access in your browser settings or add items manually.";
+    return `Camera access was denied. Allow camera access in your browser settings or ${manualAction}.`;
   }
   if (errorName === "NotFoundError" || errorName === "DevicesNotFoundError") {
-    return "No camera was found on this device. You can add items manually instead.";
+    return `No camera was found on this device. You can ${manualAction} instead.`;
   }
   if (typeof navigator !== "undefined" && !navigator.mediaDevices?.getUserMedia) {
-    return "Camera scanning is not supported in this browser. You can add items manually instead.";
+    return `Camera scanning is not supported in this browser. You can ${manualAction} instead.`;
   }
-  return "We couldn't start the camera. You can add items manually instead.";
+  return `We couldn't start the camera. You can ${manualAction} instead.`;
 }
 
 export function BarcodeScanner({
   onScan,
   onManualAdd,
   onBack,
+  mode = "barcode",
 }: BarcodeScannerProps) {
   const generatedId = useId();
   const scannerElementId = `barcode-scanner-${generatedId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
@@ -71,8 +74,8 @@ export function BarcodeScanner({
         if (disposed) return;
 
         scanner = new Html5Qrcode(scannerElementId, {
-          // WHY: Grocery products use retail linear formats, not only QR codes.
-          formatsToSupport: [
+          // WHY: Restrict each flow to its own code type so a customer QR cannot be treated as a product barcode.
+          formatsToSupport: mode === "paymentQr" ? [Html5QrcodeSupportedFormats.QR_CODE] : [
             Html5QrcodeSupportedFormats.CODE_39,
             Html5QrcodeSupportedFormats.CODE_93,
             Html5QrcodeSupportedFormats.CODE_128,
@@ -122,7 +125,7 @@ export function BarcodeScanner({
         setStatus("scanning");
       } catch (error) {
         if (disposed) return;
-        setFallbackMessage(cameraFailureMessage(error));
+        setFallbackMessage(cameraFailureMessage(error, mode));
         setStatus("fallback");
         if (scanner?.isScanning) {
           try {
@@ -143,7 +146,7 @@ export function BarcodeScanner({
       }
       scannerRef.current = null;
     };
-  }, [scannerElementId]);
+  }, [scannerElementId, mode]);
 
   async function toggleTorch() {
     const scanner = scannerRef.current;
@@ -176,7 +179,7 @@ export function BarcodeScanner({
             </button>
           ) : <span className="h-11 w-11" />}
 
-          <h1 className="text-base font-semibold">Scan barcode</h1>
+          <h1 className="text-base font-semibold">{mode === "paymentQr" ? "Scan shop QR" : "Scan barcode"}</h1>
 
           {torchAvailable ? (
             <button
@@ -196,7 +199,7 @@ export function BarcodeScanner({
         <div className="relative flex min-h-[280px] flex-1 items-center justify-center overflow-hidden bg-[#090D0F]">
           <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-transparent to-black/50" />
           <div
-            aria-label="Live barcode camera preview"
+            aria-label={mode === "paymentQr" ? "Live shop QR camera preview" : "Live barcode camera preview"}
             className="absolute inset-0 overflow-hidden"
             id={scannerElementId}
             ref={scannerElementRef}
@@ -229,7 +232,7 @@ export function BarcodeScanner({
                 onClick={onManualAdd}
                 type="button"
               >
-                Add items manually instead
+                {mode === "paymentQr" ? "Enter payment link manually" : "Add items manually instead"}
               </button>
             </div>
           )}
@@ -237,10 +240,10 @@ export function BarcodeScanner({
 
         <footer className="z-10 bg-bg px-5 pb-5 pt-4 text-center">
           <p className="text-sm font-semibold">
-            {status === "scanning" ? "Scanning…" : status === "starting" ? "Preparing scanner…" : "Manual entry is ready"}
+              {status === "scanning" ? "Scanning…" : status === "starting" ? "Preparing scanner…" : "Manual entry is ready"}
           </p>
           <p className="mt-2 text-sm leading-5 text-foreground/75">
-            Hold steady and keep the barcode in view.
+            {mode === "paymentQr" ? "Hold the shop's payment QR steady in the camera view." : "Hold steady and keep the barcode in view."}
           </p>
           {torchError && (
             <p className="mt-2 text-xs text-amber" role="status">{torchError}</p>
@@ -251,7 +254,7 @@ export function BarcodeScanner({
               onClick={onManualAdd}
               type="button"
             >
-              Add items manually
+              {mode === "paymentQr" ? "Enter payment link manually" : "Add items manually"}
             </button>
           )}
         </footer>

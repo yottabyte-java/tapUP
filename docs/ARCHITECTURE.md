@@ -251,10 +251,13 @@ owner confirms receipt through `payCash`. A sale with an approved tab remains
 
 ### C. Customer QR link and lender consent
 
-1. Signup is email/password. Before linking a customer QR, the signed-in customer requests an
-   Auth phone change and enters the SMS OTP. The link RPC matches that Auth-confirmed phone to
-   the shop’s existing phone record and records the customer’s consent; profile phone data is
-   not used for identity. An unverified or mismatched number cannot claim the record.
+1. Signup is email/password. A customer opens a live shop purchase QR while signed in and
+   confirms an Auth phone change with SMS OTP. The database link RPC accepts only that
+   Auth-confirmed South African phone and explicit consent. It either links the exact matching
+   unclaimed phone-only record for that shop after owner identity attestation, or creates a new shop relationship for the same
+   Auth profile; a claimed relationship, mismatched phone, expired/reused QR, or unverified
+   phone is rejected. Profile phone text is not used as identity. One Auth profile can therefore
+   have one separate relationship at each shop without sharing shop-specific buying power.
 2. The customer can grant or revoke lender sharing separately for each shop from `/me`.
    `set_lender_sharing_consent` writes only the signed-in customer’s own link. The lender API
    keeps API-key authentication and returns `403` unless that exact shop/customer record has

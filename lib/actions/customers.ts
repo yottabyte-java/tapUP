@@ -96,13 +96,26 @@ async function getCustomerSaleContext(input: unknown): Promise<CustomerSaleConte
     .eq("qr_token_hash", tokenHash).maybeSingle();
   if (saleError) return { ok: false, error: "unavailable" };
   if (
-    !sale || typeof sale.shop_id !== "string" || sale.shop_customer_id !== null
+    !sale || typeof sale.shop_id !== "string"
     || sale.method !== "pending" || sale.status !== "pending"
     || (sale.qr_token_hash !== null && typeof sale.qr_token_hash !== "string")
     || (sale.expires_at !== null && typeof sale.expires_at !== "string")
     || (sale.used_at !== null && typeof sale.used_at !== "string")
     || verifySaleToken(parsed.data, sale.qr_token_hash, sale.expires_at, sale.used_at) !== "ok"
   ) return { ok: false, error: "invalid_link" };
+
+  if (sale.shop_customer_id !== null) {
+    const { data: linkedCustomer, error: linkedCustomerError } = await admin
+      .from("shop_customers")
+      .select("customer_profile_id, status")
+      .eq("id", sale.shop_customer_id)
+      .eq("shop_id", sale.shop_id)
+      .maybeSingle();
+    if (linkedCustomerError) return { ok: false, error: "unavailable" };
+    if (!linkedCustomer || linkedCustomer.customer_profile_id !== user.id || linkedCustomer.status !== "active") {
+      return { ok: false, error: "invalid_link" };
+    }
+  }
 
   return {
     ok: true,
@@ -119,7 +132,8 @@ type PayConsentContext =
   | {
     ok: true;
     sessionClient: Awaited<ReturnType<typeof createSessionClient>>;
-    shopCustomerId: string;
+    shopCustomerId: string | null;
+    userId: string;
   }
   | ActionFailure;
 
@@ -138,14 +152,18 @@ async function getPayConsentContext(input: unknown): Promise<PayConsentContext> 
     .eq("customer_phone", verifiedPhone.data)
     .maybeSingle();
   if (customerError) return { ok: false, error: "unavailable" };
+  if (!shopCustomer) {
+    return { ok: true, sessionClient: context.sessionClient, shopCustomerId: null, userId: context.userId };
+  }
   if (
-    !shopCustomer
-  ) return { ok: false, error: "phone_required" };
-  if (typeof shopCustomer.id !== "string" || shopCustomer.status !== "active" || shopCustomer.customer_profile_id !== null) {
+    typeof shopCustomer.id !== "string"
+    || shopCustomer.status !== "active"
+    || (shopCustomer.customer_profile_id !== null && shopCustomer.customer_profile_id !== context.userId)
+  ) {
     return { ok: false, error: "invalid_link" };
   }
 
-  return { ok: true, sessionClient: context.sessionClient, shopCustomerId: shopCustomer.id };
+  return { ok: true, sessionClient: context.sessionClient, shopCustomerId: shopCustomer.id, userId: context.userId };
 }
 
 export async function requestCustomerPhoneVerification(input: unknown): Promise<ActionFailure | ActionSuccess<{ sent: true }>> {
@@ -197,12 +215,13 @@ export async function linkWithConsent(input: unknown): Promise<
   const context = await getPayConsentContext(parsed.data.token);
   if (!context.ok) return context;
 
-  // WHY: The restricted RPC repeats identity, consent, and phone-match checks inside the database transaction.
-  const { error } = await context.sessionClient.rpc("link_shop_customer_with_consent", {
-    target_shop_customer_id: context.shopCustomerId,
+  // WHY: The RPC locks the live sale and resolves only the caller's OTP-confirmed phone in that shop.
+  const targetTokenHash = createHash("sha256").update(parsed.data.token, "utf8").digest("hex");
+  const { error, data } = await context.sessionClient.rpc("link_shop_customer_from_sale_with_consent", {
+    target_token_hash: targetTokenHash,
     consent_given: parsed.data.consent,
   });
-  if (error) return { ok: false, error: "link_failed" };
+  if (error || typeof data !== "string") return { ok: false, error: "link_failed" };
   return { ok: true, linked: true };
 }
 
@@ -373,6 +392,45 @@ export async function addCustomer(input: unknown): Promise<
   };
 }
 
+export async function listManualCustomersNeedingSetup(): Promise<
+  ActionFailure | ActionSuccess<{ customers: Array<{ shopCustomerId: string; name: string; phone: string; pinSet: boolean }> }>
+> {
+  // WHY: Persisted incomplete rows let an owner resume setup after refreshing without recreating a customer.
+  const owner = await getOwnerContext();
+  if (!owner.ok) return owner;
+
+  const { data, error } = await owner.admin
+    .from("shop_customers")
+    .select("id, display_name, customer_phone, pin_hash")
+    .eq("shop_id", owner.shopId)
+    .eq("status", "active")
+    .is("customer_profile_id", null)
+    .not("consent_at", "is", null)
+    .is("owner_confirmed_at", null)
+    .order("display_name")
+    .limit(100);
+  if (error || !data) return { ok: false, error: "customer_list_unavailable" };
+
+  const customers = data.map((row) => {
+    if (
+      typeof row.id !== "string"
+      || typeof row.display_name !== "string"
+      || typeof row.customer_phone !== "string"
+      || (row.pin_hash !== null && typeof row.pin_hash !== "string")
+    ) return null;
+    return {
+      shopCustomerId: row.id,
+      name: row.display_name,
+      phone: row.customer_phone,
+      pinSet: row.pin_hash !== null,
+    };
+  });
+  if (customers.some((customer) => customer === null)) {
+    return { ok: false, error: "customer_list_unavailable" };
+  }
+  return { ok: true, customers: customers.filter((customer) => customer !== null) };
+}
+
 export async function setCustomerPin(input: unknown): Promise<
   ActionFailure | ActionSuccess<{ shopCustomerId: string }>
 > {
@@ -431,9 +489,25 @@ export async function confirmCustomerIdentity(input: unknown): Promise<
     .is("owner_confirmed_at", null)
     .select("id")
     .maybeSingle();
-  if (error) return { ok: false, error: "identity_confirmation_failed" };
-  if (!data) return { ok: false, error: "customer_not_available" };
-  return { ok: true, confirmed: true };
+  if (!error && data) return { ok: true, confirmed: true };
+
+  // WHY: A lost response after a committed update must not leave the owner trapped on a stale confirmation step.
+  const { data: existing, error: readError } = await owner.admin
+    .from("shop_customers")
+    .select("status, consent_at, owner_confirmed_at, pin_hash, customer_profile_id")
+    .eq("id", parsed.data.shopCustomerId)
+    .eq("shop_id", owner.shopId)
+    .maybeSingle();
+  if (
+    !readError
+    && existing?.status === "active"
+    && existing.consent_at !== null
+    && existing.owner_confirmed_at !== null
+    && (existing.pin_hash !== null || existing.customer_profile_id !== null)
+  ) return { ok: true, confirmed: true };
+
+  if (error || readError) return { ok: false, error: "identity_confirmation_failed" };
+  return { ok: false, error: "customer_not_available" };
 }
 
 export async function verifyCustomerPin(input: unknown): Promise<

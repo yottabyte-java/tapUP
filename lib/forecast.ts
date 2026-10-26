@@ -2,6 +2,7 @@ import { formatRand } from "@/lib/money";
 import type { BuyingPowerHistory, BuyingPowerSale } from "@/lib/buyingPower";
 
 const FOUR_WEEKS_MILLISECONDS = 28 * 24 * 60 * 60 * 1000;
+const FORECAST_WEEK_MILLISECONDS = 7 * 24 * 60 * 60 * 1000;
 const MONTH_END_HISTORY_MILLISECONDS = 30 * 24 * 60 * 60 * 1000;
 const CLEAR_SPEND_INCREASE_PERCENT = 150;
 
@@ -118,6 +119,21 @@ export function forecastNextWeekSpend(
   // WHY: Dividing four weeks of completed purchases by four is a simple moving weekly average;
   // the rolling window naturally treats weeks without purchases as zero.
   return fourWeekAverage(totalCents);
+}
+
+export function hasEnoughForecastHistory(
+  history: BuyingPowerHistory,
+  now: string | Date = new Date(),
+): boolean {
+  const nowMilliseconds = referenceTime(now);
+  const observedWeeks = new Set<number>();
+  for (const sale of recentPurchases(history, nowMilliseconds, FOUR_WEEKS_MILLISECONDS)) {
+    const age = nowMilliseconds - milliseconds(sale.createdAt, "sale.createdAt");
+    const week = Math.floor(age / FORECAST_WEEK_MILLISECONDS);
+    if (week >= 0 && week < 4) observedWeeks.add(week);
+  }
+  // WHY: Require completed activity in each observed week before presenting a four-week estimate.
+  return observedWeeks.size === 4;
 }
 
 export interface TabNeedForecast {

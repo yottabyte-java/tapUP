@@ -22,8 +22,9 @@ describe.skipIf(!container)("PostgreSQL buying-power parity and existing approva
     sql(`CREATE DATABASE ${database};`, "postgres");
     const schema = readFileSync("supabase/schema.sql", "utf8");
     const migration = readFileSync("supabase/migrations/202610250001_align_buying_power_floor.sql", "utf8");
-    expect(migration.slice(migration.indexOf("CREATE OR REPLACE FUNCTION")))
-      .toBe(schema.slice(schema.indexOf("CREATE OR REPLACE FUNCTION public.approve_tab_atomic(")));
+    const currentMigration = readFileSync("supabase/migrations/202610260003_complete_redeemed_qr_requests.sql", "utf8");
+    const currentApproval = currentMigration.match(/CREATE OR REPLACE FUNCTION public\.approve_tab_atomic\([\s\S]*?\n\$\$;/)?.[0];
+    expect(currentApproval).toBe(schema.match(/CREATE OR REPLACE FUNCTION public\.approve_tab_atomic\([\s\S]*?\n\$\$;/)?.[0]);
     const scoring = schema.slice(schema.indexOf("  WITH completed AS ("), schema.indexOf("  SELECT COALESCE(pg_catalog.sum(s.tab_cents::bigint"));
     sql(`
       DO $$ BEGIN
@@ -39,6 +40,7 @@ describe.skipIf(!container)("PostgreSQL buying-power parity and existing approva
       ${schema}
       ${readFileSync("supabase/rls.sql", "utf8")}
       ${migration}
+      ${currentMigration}
       CREATE FUNCTION public.test_score(target_shop_id uuid, target_shop_customer_id uuid, approval_now timestamptz)
       RETURNS jsonb LANGUAGE plpgsql AS $$
       DECLARE completed_count bigint; weighted_days bigint; weighted_spend bigint; weekly_spend bigint;

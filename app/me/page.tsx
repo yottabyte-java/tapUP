@@ -5,11 +5,13 @@ import { connection } from "next/server";
 import { Suspense } from "react";
 import { z } from "zod";
 import { LimitMeter } from "@/components/LimitMeter";
+import { formatRand } from "@/lib/money";
 import { CustomerAccountActivity } from "@/components/CustomerAccountActivity";
 import { CustomerAccountHeader } from "@/components/CustomerAccountHeader";
+import { CustomerPurchaseEntry } from "@/components/CustomerPurchaseEntry";
 import { WhyLimit } from "@/components/WhyLimit";
-import { calculateBuyingPower, explainLimit, type BuyingPowerHistory } from "@/lib/buyingPower";
-import { likelyToNeedTab } from "@/lib/forecast";
+import { calculateBuyingPower, explainLimit, hasCompletedPurchase, type BuyingPowerHistory } from "@/lib/buyingPower";
+import { forecastNextWeekSpend, hasEnoughForecastHistory, likelyToNeedTab } from "@/lib/forecast";
 import { createClient } from "@/lib/supabase/server";
 import { setLenderSharingConsent } from "@/lib/actions/lenderConsent";
 
@@ -81,6 +83,8 @@ type BuyingPowerCardData = {
   nextLimitCents: number;
   reasons: string[];
   forecast: ReturnType<typeof likelyToNeedTab>;
+  forecastSpendCents: number | null;
+  hasCompletedHistory: boolean;
 };
 
 async function loadSales(
@@ -148,11 +152,18 @@ function DataUnavailable() {
 
 function NoShopLinked() {
   return (
-    <main className="flex min-h-full flex-col px-3 py-3">
-      <section className="flex flex-1 flex-col justify-center rounded-[1.4rem] border border-teal/70 px-5 py-8 text-center">
-        <CustomerAccountHeader />
-        <p className="mt-3 text-sm leading-relaxed text-foreground/75">
-          Your account is not linked to a shop yet. Ask the shop owner to link your customer record.
+    <main className="customer-buying-power-layout flex min-h-full flex-col px-3 py-3">
+      <section className="flex flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-4 py-5">
+        <CustomerAccountHeader description="A separate record for each shop" />
+        <div className="rounded-2xl bg-card p-4">
+          <h2 className="text-sm font-semibold">Buying power not established yet</h2>
+          <p className="mt-2 text-sm leading-relaxed text-foreground/70">
+            There are no shop records, tabs, purchases, or repayments on this account yet. Scan a shop&apos;s purchase QR and give consent to start a shop-specific record.
+          </p>
+        </div>
+        <CustomerPurchaseEntry />
+        <p className="mt-4 text-xs leading-relaxed text-foreground/60">
+          Buying power is based on completed purchases and repayments at each shop. A new record starts at R0 until a completed purchase is recorded.
         </p>
       </section>
     </main>
@@ -177,6 +188,11 @@ function ShopBuyingPower({ card }: { card: BuyingPowerCardData }) {
         limitCents={card.limitCents}
         nextLimitCents={card.nextLimitCents}
       />
+      {!card.hasCompletedHistory && (
+        <p className="mt-3 rounded-xl bg-bg p-3 text-xs leading-relaxed text-foreground/75">
+          Not enough completed history yet. Your buying power remains at R0 until your first purchase is completed at this shop.
+        </p>
+      )}
       <WhyLimit reasons={card.reasons} />
       <CustomerAccountActivity history={card.history} />
       <div className="mt-5 border-t border-white/10 pt-4">
@@ -194,15 +210,23 @@ function ShopBuyingPower({ card }: { card: BuyingPowerCardData }) {
           </span>
         </form>
       </div>
-      {card.forecast.likely && (
-        <aside className="mt-5 flex items-start gap-3 rounded-xl border border-teal/50 bg-[#142329] p-3.5">
-          <span aria-hidden="true" className="mt-0.5 text-lg text-amber">▣</span>
-          <div>
-            <h3 className="text-sm font-semibold">You may need a tab around month end</h3>
-            <p className="mt-1 text-xs leading-relaxed text-foreground/70">{card.forecast.reason}</p>
-          </div>
-        </aside>
-      )}
+      <aside aria-label="Spending estimate" className="mt-5 rounded-xl border border-teal/50 bg-[#142329] p-3.5">
+        <h3 className="text-sm font-semibold">Your spending insight</h3>
+        {card.forecastSpendCents === null ? (
+          <p className="mt-1 text-xs leading-relaxed text-foreground/70">
+            Not enough history to estimate next week&apos;s spend. We need at least one completed purchase in each of the last four weeks.
+          </p>
+        ) : (
+          <>
+            <p className="mt-1 text-xs leading-relaxed text-foreground/70">
+              Estimated next-week spend: {formatRand(card.forecastSpendCents)}. This is a four-week average estimate, not a guarantee.
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-foreground/70">
+              {card.forecast.likely ? "You may need a tab around month end." : card.forecast.reason}
+            </p>
+          </>
+        )}
+      </aside>
     </section>
   );
 }
@@ -387,6 +411,8 @@ async function BuyingPowerContent() {
       nextLimitCents: buyingPower.nextLimitCents,
       reasons: explainLimit(buyingPower),
       forecast: likelyToNeedTab(history, now),
+      forecastSpendCents: hasEnoughForecastHistory(history, now) ? forecastNextWeekSpend(history, now) : null,
+      hasCompletedHistory: hasCompletedPurchase(history, now),
     });
   }
 
@@ -394,7 +420,8 @@ async function BuyingPowerContent() {
     <main className="customer-buying-power-layout flex min-h-full flex-col px-3 py-3">
       <section className="flex flex-1 flex-col rounded-[1.4rem] border border-teal/70 px-4 py-5">
         <CustomerAccountHeader description="A separate record for each shop" />
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <CustomerPurchaseEntry />
+        <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
           {cards.map((card) => <ShopBuyingPower card={card} key={card.id} />)}
         </div>
       </section>

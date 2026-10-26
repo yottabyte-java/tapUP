@@ -111,23 +111,25 @@ describe("owner payment actions", () => {
     const rejected = await Promise.all([rejectTab({ saleId: SALE }), rejectTab({ saleId: SALE })]);
     expect(rejected.filter((result) => result.ok)).toHaveLength(1);
   });
-  it("does not confirm an expired sale", async () => {
+  it("does not redeem an expired, unused QR", async () => {
     state.sale.expires_at = "2000-01-01T00:00:00Z";
+    Object.assign(state.sale, { status: "pending", method: "pending", used_at: null, paid_now_cents: 0, tab_cents: 0, paid_now_method: null });
     expect(await payCash({ saleId: SALE })).toEqual({ ok: false, error: "sale_expired" });
     expect(state.sale.paid_now_confirmed_at).toBeNull();
   });
-  it.each(["pending", "tab_requested"])("does not confirm %s cash when expiry passes during customer validation", async (status) => {
+  it.each(["pending", "tab_requested"])("can finish a consumed %s cash request after QR expiry", async (status) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-25T12:00:00Z"));
     state.sale.expires_at = "2026-10-25T12:00:01Z";
-    if (status === "pending") Object.assign(state.sale, { status, method: "cash", paid_now_cents: 7500, tab_cents: 0 });
+    if (status === "pending") Object.assign(state.sale, { status, method: "cash", paid_now_cents: 7500, tab_cents: 0, paid_now_method: "cash" });
     state.delayCustomer = true;
-    expect(await payCash({ saleId: SALE, shopCustomerId: CUSTOMER })).toEqual({ ok: false, error: "cash_confirmation_failed" });
-    expect(state.sale.paid_now_confirmed_at).toBeNull();
-    expect(state.sale.status).toBe(status);
+    const result = await payCash({ saleId: SALE, shopCustomerId: CUSTOMER });
+    expect(result.ok).toBe(true);
+    expect(state.sale.paid_now_confirmed_at).toEqual(expect.any(String));
+    expect(state.sale.status).toBe(status === "pending" ? "paid" : "tab_requested");
   });
-  it.each(["pending", "tab_requested"])("reports authoritative lock-wait expiry for %s cash", async (status) => {
-    if (status === "pending") Object.assign(state.sale, { status, method: "cash", paid_now_cents: 7500, tab_cents: 0 });
+  it("reports authoritative expiry if an unused QR expires during cash redemption", async () => {
+    Object.assign(state.sale, { status: "pending", method: "pending", used_at: null, paid_now_cents: 0, tab_cents: 0, paid_now_method: null });
     state.expiredAtWrite = true;
     expect(await payCash({ saleId: SALE })).toEqual({ ok: false, error: "sale_expired" });
     expect(state.sale.paid_now_confirmed_at).toBeNull();
