@@ -10,19 +10,22 @@ Our goal is to support financial inclusion by making everyday spaza transactions
 
 **Live app:** https://tap-pk53x8bqi-yottabytes.vercel.app/
 
-**Alternative deployment:** https://tap-up-beryl.vercel.app/
 
 **GitHub repository:** https://github.com/yottabyte-java/tapUP
 
 ### Demo accounts
 
 Use the demo accounts below to explore tapUP. Replace these placeholders with working credentials before sharing the README.
+### Demo accounts
 
 | Role | Login |
 |---|---|
-| Shop owner | `[SHOP_OWNER_DEMO_EMAIL]` |
-| Customer | `[CUSTOMER_DEMO_EMAIL]` |
-| Password | `[DEMO_PASSWORD_OR_ACCESS_INSTRUCTIONS]` |
+| Shop owner | `owner.demo@tapup.example.com` |
+| Customer | `customer.demo@tapup.example.com` |
+| Demo password | `TapUP-Demo-2026!` |
+
+**Demo access:** These are demo-only credentials. The accounts must be created and configured in Supabase Auth before they can be used to sign in. Do not use these credentials for real accounts.
+
 
 If demo accounts are not available, use the application's signup flow to create an account.
 
